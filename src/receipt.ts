@@ -1,6 +1,5 @@
-import { createRequire } from "node:module";
-import { Resvg } from "@resvg/resvg-js";
 import type { Rateio } from "./rateio";
+import { PALETTE as C, logoIcon, svgToPng } from "./brand";
 import { fetchTxDetails, type TxDetails, type TxSource } from "./txDetails";
 
 export type ReceiptCard = {
@@ -10,10 +9,6 @@ export type ReceiptCard = {
 
 // Quem gera o comprovante de uma liberação. Devolve null se não achou a transação na rede.
 export type ReceiptMaker = (rateio: Rateio, signature: string) => Promise<Buffer | null>;
-
-// Fonte empacotada: com loadSystemFonts true, o resvg levou ~50 s por imagem no Windows.
-const req = createRequire(import.meta.url);
-const FONT_FILES = ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"].map((f) => req.resolve(`dejavu-fonts-ttf/ttf/${f}`));
 
 // Formatador próprio: não importamos commands.ts para não acoplar o comprovante aos comandos.
 const brl = (cents: number) => `R$ ${(cents / 100).toFixed(2).replace(".", ",")}`;
@@ -54,48 +49,78 @@ const clean = (text: string, max = 40): string => {
   return cut.replace(/[&<>"']/g, (c) => ESCAPES[c]);
 };
 
+// Anel com um segmento por participante, todos preenchidos: "todo mundo pagou" sem precisar de texto.
+const ring = (cx: number, cy: number, r: number, n: number): string => {
+  const count = Math.min(Math.max(n, 1), 24);
+  const step = 360 / count;
+  const gap = count === 1 ? 0 : Math.min(8, step / 3);
+  const pt = (deg: number) => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return `${Math.round((cx + Math.cos(a) * r) * 100) / 100} ${Math.round((cy + Math.sin(a) * r) * 100) / 100}`;
+  };
+  let out = "";
+  for (let i = 0; i < count; i++) {
+    const a0 = i * step + gap / 2;
+    const a1 = (i + 1) * step - gap / 2 - (count === 1 ? 0.1 : 0);
+    out += `<path d="M${pt(a0)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${pt(a1)}" fill="none" stroke="${C.violet}" stroke-width="16"/>`;
+  }
+  return out;
+};
+
+// Borda serrilhada de cupom: dentes de 16 px na base.
+const ticketPath = (x0: number, x1: number, y0: number, y1: number): string => {
+  const teeth = Math.floor((x1 - x0) / 16);
+  let d = `M${x0} ${y0} H${x1} V${y1}`;
+  for (let k = 0; k < teeth; k++) d += ` L${x1 - 16 * k - 8} ${y1 + 10} L${x1 - 16 * (k + 1)} ${y1}`;
+  return `${d} Z`;
+};
+
 export const renderReceiptSvg = (c: ReceiptCard): string => {
-  const rows: [string, string][] = [
+  const rows: [string, string, boolean?][] = [
     ["Rateio", clean(c.description, 26)],
     ["Total do rateio", clean(c.totalBrl)],
     ["Participantes", String(c.participants)],
-    ["Liberado para", clean(c.responsibleName, 22)],
-    ["Origem (cofre)", clean(c.fromAddr)],
-    ["Destino", clean(c.toAddr)],
+    ["Origem (cofre)", clean(c.fromAddr), true],
+    ["Destino", clean(c.toAddr), true],
     ["Taxa de rede", clean(c.feeSol)],
     ["Data", clean(c.when)],
     ["Rede", "Solana Devnet"],
   ];
-  const lines = rows.map(([label, value], i) => {
-    const y = 540 + i * 52;
-    return `<text x="64" y="${y}" font-size="22" fill="#94a3b8">${label}</text>` +
-      `<text x="736" y="${y}" font-size="24" fill="#f1f5f9" text-anchor="end">${value}</text>` +
-      `<line x1="64" y1="${y + 18}" x2="736" y2="${y + 18}" stroke="#1e293b" stroke-width="2"/>`;
+  const lines = rows.map(([label, value, mono], i) => {
+    const y = 584 + i * 47;
+    return `<text x="96" y="${y}" font-size="20" fill="${C.muted}">${label}</text>` +
+      `<text x="704" y="${y}" font-size="${mono ? 20 : 22}" fill="${C.ink}" text-anchor="end"${mono ? ' font-family="DejaVu Sans Mono"' : ""}>${value}</text>`;
   }).join("");
+  const dash = (y: number) =>
+    `<line x1="72" y1="${y}" x2="728" y2="${y}" stroke="${C.line}" stroke-width="3" stroke-dasharray="9 7"/>`;
+  // Furos nas laterais, como num cupom destacado.
+  const notch = (y: number) =>
+    `<circle cx="48" cy="${y}" r="15" fill="${C.ink}"/><circle cx="752" cy="${y}" r="15" fill="${C.ink}"/>`;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1080" viewBox="0 0 800 1080" font-family="DejaVu Sans">` +
-    `<rect width="800" height="1080" fill="#0f172a"/>` +
-    `<rect x="0" y="0" width="800" height="12" fill="#14f195"/>` +
-    `<text x="400" y="96" font-size="44" font-weight="bold" fill="#f8fafc" text-anchor="middle">CPhix</text>` +
-    `<text x="400" y="136" font-size="24" fill="#94a3b8" text-anchor="middle">Comprovante de liberação</text>` +
-    `<circle cx="400" cy="236" r="48" fill="#14f195"/>` +
-    `<path d="M376 238 l17 17 l32 -36" fill="none" stroke="#0f172a" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>` +
-    `<text x="400" y="332" font-size="28" font-weight="bold" fill="#14f195" text-anchor="middle">Confirmado na Solana</text>` +
-    `<text x="400" y="414" font-size="68" font-weight="bold" fill="#f8fafc" text-anchor="middle">${clean(c.amountBrl)}</text>` +
-    `<text x="400" y="456" font-size="22" fill="#94a3b8" text-anchor="middle">liberado ao responsável</text>` +
+    `<rect width="800" height="1080" fill="${C.ink}"/>` +
+    `<path d="${ticketPath(48, 752, 36, 1034)}" fill="${C.paper}"/>` +
+    // Faixa escura com a logo completa: o menta só tem contraste sobre a tinta.
+    `<path d="M48 36 H752 V132 H48 Z" fill="${C.ink}"/>` +
+    logoIcon(261, 52, 64) +
+    `<text x="337" y="104" font-size="52" font-weight="bold" fill="${C.mint}">CPHIX</text>` +
+    `<rect x="592" y="66" width="112" height="36" rx="18" fill="none" stroke="${C.mint}" stroke-width="2"/>` +
+    `<text x="648" y="90" font-size="17" fill="${C.mint}" text-anchor="middle">Devnet</text>` +
+    `<text x="400" y="166" font-size="20" fill="${C.muted}" text-anchor="middle">Comprovante de liberação</text>` +
+    ring(400, 274, 84, c.participants) +
+    `<circle cx="400" cy="274" r="50" fill="${C.mint}"/>` +
+    `<path d="M376 275 l17 17 l32 -36" fill="none" stroke="${C.ink}" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `<text x="400" y="454" font-size="76" font-weight="bold" fill="${C.ink}" text-anchor="middle">${clean(c.amountBrl)}</text>` +
+    `<text x="400" y="494" font-size="24" fill="${C.muted}" text-anchor="middle">liberado para ${clean(c.responsibleName, 22)}</text>` +
+    dash(530) + notch(530) +
     lines +
-    `<text x="400" y="1030" font-size="20" fill="#64748b" text-anchor="middle">Assinatura ${clean(c.signature)}</text>` +
-    `<text x="400" y="1058" font-size="18" fill="#475569" text-anchor="middle">Confira no Solana Explorer</text>` +
+    dash(950) + notch(950) +
+    `<text x="400" y="984" font-size="17" fill="${C.muted}" text-anchor="middle" font-family="DejaVu Sans Mono">${clean(c.signature)}</text>` +
+    `<text x="400" y="1010" font-size="16" fill="${C.muted}" text-anchor="middle">Confira no Solana Explorer</text>` +
     `</svg>`;
 };
 
-export const renderReceiptPng = (c: ReceiptCard): Buffer => {
-  const resvg = new Resvg(renderReceiptSvg(c), {
-    fitTo: { mode: "width", value: 800 },
-    font: { loadSystemFonts: false, fontFiles: FONT_FILES, defaultFontFamily: "DejaVu Sans" },
-  });
-  return resvg.render().asPng();
-};
+export const renderReceiptPng = (c: ReceiptCard): Buffer => svgToPng(renderReceiptSvg(c), 800);
 
 // Liga tudo: busca a transação, monta o cartão e devolve o PNG (ou null se a rede não a achou).
 export const makeReceiptMaker = (

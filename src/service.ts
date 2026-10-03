@@ -19,6 +19,8 @@ type VaultEscrow = Escrow & { open?(rateio: Rateio): Promise<string> };
 
 const USAGE = "Uso: /rateio <valor> <descrição>. Exemplo: /rateio 120 churrasco";
 const NO_RATEIO = "Nenhum rateio aberto. Use /rateio.";
+const MAX_CENTS = 1_000_000; // R$ 10.000,00
+const MAX_DESCRIPTION = 60;
 const INVALID_LINK = "Link inválido ou expirado. Envie /carteira de novo.";
 const LINK_TTL_MS = 15 * 60 * 1000;
 
@@ -40,6 +42,13 @@ export class RateioService {
     const totalCents = parseAmountToCents(amount);
     const description = rest.join(" ");
     if (totalCents === null || !description) return { ok: false, error: USAGE };
+    // Acima disso a tesouraria de teste pode não ter token, e o erro viraria "Erro ao falar com a Solana".
+    if (totalCents > MAX_CENTS) return { ok: false, error: "O valor máximo de um rateio é R$ 10.000,00." };
+    // A descrição aparece em /status, /cobrar, /historico e no comprovante: longa demais, quebra tudo.
+    // Array.from conta acento e emoji como um caractere.
+    if (Array.from(description).length > MAX_DESCRIPTION) {
+      return { ok: false, error: `A descrição pode ter no máximo ${MAX_DESCRIPTION} caracteres.` };
+    }
     if (activeRateio(this.db, chatId)) return { ok: false, error: "Já existe um rateio aberto neste chat." };
     const rateio = createRateio({ chatId, description, totalCents, responsibleId: userId, responsibleName: name });
     saveRateio(this.db, rateio);
@@ -115,6 +124,23 @@ export class RateioService {
     this.queues.set(chatId, tail);
     void tail.then(() => { if (this.queues.get(chatId) === tail) this.queues.delete(chatId); });
     return run;
+  }
+
+  // Só o responsável cancela, e só antes de qualquer pagamento: o bot ainda não devolve dinheiro (refund).
+  // Roda na fila do chat para esperar um pagamento em andamento, senão o depósito ficaria sem registro.
+  cancel(chatId: string, userId: string): Promise<{ ok: true; rateio: Rateio } | Err> {
+    return this.inQueue(chatId, async () => {
+      const r = activeRateio(this.db, chatId);
+      if (!r) return { ok: false, error: NO_RATEIO };
+      if (r.responsibleId !== userId) return { ok: false, error: "Só o responsável pode cancelar o rateio." };
+      if (r.participants.some((p) => p.paid)) {
+        return { ok: false, error: "Já há pagamentos neste rateio; o reembolso ainda não está disponível." };
+      }
+      // Apaga em vez de marcar como cancelado: assim o tipo Rateio, que todos usam, não muda.
+      const cur = this.db.get();
+      this.db.set({ ...cur, rateios: cur.rateios.filter((x) => x.id !== r.id) });
+      return { ok: true, rateio: r };
+    });
   }
 
   simulatePix(chatId: string, userId: string): Promise<PayResult> {

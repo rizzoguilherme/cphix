@@ -6,6 +6,19 @@ export type WAMessageLike = {
   message?: { conversation?: string | null; extendedTextMessage?: { text?: string | null } | null } | null;
 };
 
-export const parseIncoming = (_m: WAMessageLike): Incoming | null => {
-  throw new Error("não implementado");
+// Função pura (sem importar o Baileys) para poder testar sem conexão.
+export const parseIncoming = (m: WAMessageLike): Incoming | null => {
+  const jid = m.key.remoteJid;
+  // fromMe: o bot não responde a si mesmo; status@broadcast são os stories.
+  if (!jid || m.key.fromMe || jid === "status@broadcast") return null;
+
+  const text = m.message?.conversation ?? m.message?.extendedTextMessage?.text;
+  if (!text) return null;
+
+  const isGroup = jid.endsWith("@g.us");
+  // Em grupo, o autor é o participant (número ou "@lid", desde que estável por pessoa).
+  const userId = isGroup ? m.key.participant : jid;
+  if (!userId) return null;
+
+  return { chatId: jid, userId, name: m.pushName?.trim() || "Participante", isGroup, text };
 };
