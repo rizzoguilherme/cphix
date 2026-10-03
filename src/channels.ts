@@ -1,6 +1,6 @@
-export type Channel = "telegram" | "whatsapp";
+export type Channel = "telegram" | "whatsapp" | "whatsapp-cloud";
 
-const KNOWN: readonly Channel[] = ["telegram", "whatsapp"];
+const KNOWN: readonly Channel[] = ["telegram", "whatsapp", "whatsapp-cloud"];
 
 // Valida CHANNEL para que um erro de digitação ("whatsap") não suba o bot sem canal nenhum.
 export const parseChannels = (value: string): Channel[] => {
