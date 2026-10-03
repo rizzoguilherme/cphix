@@ -61,6 +61,23 @@ export class RateioService {
     return run;
   }
 
+  // Só o responsável cancela, e só antes de qualquer pagamento: o bot ainda não devolve dinheiro (refund).
+  // Roda na fila do chat para esperar um pagamento em andamento, senão o depósito ficaria sem registro.
+  cancel(chatId: string, userId: string): Promise<{ ok: true; rateio: Rateio } | Err> {
+    return this.inQueue(chatId, async () => {
+      const r = activeRateio(this.db, chatId);
+      if (!r) return { ok: false, error: NO_RATEIO };
+      if (r.responsibleId !== userId) return { ok: false, error: "Só o responsável pode cancelar o rateio." };
+      if (r.participants.some((p) => p.paid)) {
+        return { ok: false, error: "Já há pagamentos neste rateio; o reembolso ainda não está disponível." };
+      }
+      // Apaga em vez de marcar como cancelado: assim o tipo Rateio, que todos usam, não muda.
+      const cur = this.db.get();
+      this.db.set({ ...cur, rateios: cur.rateios.filter((x) => x.id !== r.id) });
+      return { ok: true, rateio: r };
+    });
+  }
+
   simulatePix(
     chatId: string, userId: string,
   ): Promise<{ ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer } | Err> {

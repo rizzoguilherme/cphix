@@ -24,6 +24,8 @@ const HELP = [
   "/simular_pix: paga a sua parte (Pix simulado)",
   "/status: mostra quem já pagou",
   "/historico: rateios já liberados, com o link de cada transação",
+  "/cobrar: lista quem ainda falta pagar",
+  "/cancelar: o responsável cancela o rateio, se ninguém pagou ainda",
   "",
   "Me adicione a um grupo e use os comandos lá.",
 ].join("\n");
@@ -81,6 +83,22 @@ export async function handleMessage(svc: RateioService, m: Incoming): Promise<Re
       return {
         text: [`🧾 ${r.description}: ${brl(r.totalCents)} (responsável: ${responsible})`, ...lines, progress(r)].join("\n"),
       };
+    }
+    case "cobrar": {
+      const res = svc.status(m.chatId);
+      if (!res.ok) return { text: res.error };
+      const shares = sharesCents(res.rateio);
+      const pending = res.rateio.participants
+        .filter((p) => !p.paid)
+        .map((p) => `${p.name} (${brl(shares.get(p.userId)!)})`);
+      if (pending.length === 0) return { text: "Todos já pagaram." };
+      // "Ana, Bia e Caio": vírgulas entre os nomes e "e" antes do último.
+      const names = pending.length === 1 ? pending[0] : `${pending.slice(0, -1).join(", ")} e ${pending.at(-1)}`;
+      return { text: `Faltam pagar: ${names}. Pague com /simular_pix` };
+    }
+    case "cancelar": {
+      const res = await svc.cancel(m.chatId, m.userId);
+      return { text: res.ok ? "Rateio cancelado." : res.error };
     }
     case "historico": {
       // Cada liberação traz o link do Explorer: qualquer pessoa do grupo confere a transação na rede.
