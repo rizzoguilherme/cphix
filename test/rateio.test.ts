@@ -88,3 +88,12 @@ describe("allPaid and progress", () => {
     expect(progress(r3)).toBe("3 de 3 pagaram ✅");
   });
 });
+
+describe("parseAmountToCents with thousands separator", () => {
+  it.each([["1.000,50", 100050], ["12.345,67", 1234567], ["1.000.000,00", 100000000], ["1.000,5", 100050]])(
+    "accepts the Brazilian format %j", (text, cents) => expect(parseAmountToCents(text)).toBe(cents));
+
+  // Sem vírgula o ponto é ambíguo ("12.345" pode ser doze mil ou doze reais), então continua recusado.
+  it.each(["1.000", "12.345", "1.00,50", "10.00,00", "1,000.50", ".100,00"])("still rejects %j", (text) =>
+    expect(parseAmountToCents(text)).toBeNull());
+});
