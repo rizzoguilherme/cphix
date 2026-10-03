@@ -1,5 +1,7 @@
 // Orquestra o fluxo: regras (rateio.ts), memória (store.ts), cofre (Escrow) e comprovante (ReceiptMaker).
 // Não conhece Telegram, WhatsApp nem Solana: só as interfaces, para ser testável com versões falsas.
+import { randomBytes } from "node:crypto";
+import bs58 from "bs58";
 import {
   allPaid, createRateio, formatTime, isExpired, isFull, join, markPaid, parseDuration, parseRateioArgs, progress, sharesCents,
   type Rateio,
@@ -10,6 +12,13 @@ import type { ReceiptMaker } from "./receipt";
 import { explorerUrl } from "./solana";
 
 type Err = { ok: false; error: string };
+type PayResult =
+  | { ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer; awaitingWallet?: boolean }
+  | Err;
+
+// Cofre na rede (docs/proposta-passkey.md): com `open`, o dinheiro fica num cofre que só libera para a
+// carteira com passkey do responsável. Sem `open` (o IntermediaryEscrow de hoje), o fluxo não muda.
+type VaultEscrow = Escrow & { open?(rateio: Rateio): Promise<string> };
 
 const USAGE =
   "Uso: /rateio <valor> <descrição> [pessoas] [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
@@ -24,11 +33,22 @@ export const EXPIRED_MSG =
   "O prazo deste rateio acabou. O responsável pode usar /prorrogar <prazo> (ex.: /prorrogar 30m) ou /cancelar (devolve o dinheiro a quem já pagou).";
 const MAX_CENTS = 1_000_000; // R$ 10.000,00
 const MAX_DESCRIPTION = 60;
+const INVALID_LINK = "Link inválido ou expirado. Envie /carteira de novo.";
+const LINK_TTL_MS = 15 * 60 * 1000;
+
+// Endereço Solana = 32 bytes em base58. Validar aqui evita liberar para um endereço digitado errado.
+const isSolanaAddress = (a: string): boolean => {
+  try {
+    return bs58.decode(a).length === 32;
+  } catch {
+    return false;
+  }
+};
 
 export class RateioService {
   // `now` existe para os testes controlarem o relógio.
   constructor(
-    private db: JsonStore<DB>, private escrow: Escrow, private receipt?: ReceiptMaker,
+    private db: JsonStore<DB>, private escrow: VaultEscrow, private receipt?: ReceiptMaker,
     private now: () => number = Date.now,
   ) {}
 
@@ -72,6 +92,10 @@ export class RateioService {
     if (!cur) return { ok: false, error: NO_RATEIO };
     if (isExpired(cur, this.now())) return { ok: false, error: EXPIRED_MSG };
     const already = cur.participants.some((p) => p.userId === userId);
+    // O cofre na rede guarda a lista de participantes e as cotas: depois de aberto, ninguém novo entra.
+    if (!already && (cur.vaultAddress || this.opening.has(cur.id))) {
+      return { ok: false, error: "Os pagamentos já começaram. Não dá para entrar neste rateio." };
+    }
     if (!already && isFull(cur)) return { ok: false, error: "Este rateio já está completo." };
     const rateio = join(cur, userId, name);
     saveRateio(this.db, rateio);
@@ -102,9 +126,40 @@ export class RateioService {
       .reverse();
   }
 
+  // Link de cadastro da carteira com passkey: token aleatório, de uso único, que vale 15 minutos.
+  // Quem tiver o link cadastra a carteira de quem pediu, por isso ele só é entregue no privado.
+  createWalletLink(userId: string): { token: string } {
+    const token = randomBytes(24).toString("base64url");
+    const cur = this.db.get();
+    const now = Date.now();
+    const live = Object.fromEntries(Object.entries(cur.walletLinks ?? {}).filter(([, l]) => l.expiresAt > now));
+    this.db.set({ ...cur, walletLinks: { ...live, [token]: { userId, expiresAt: now + LINK_TTL_MS } } });
+    return { token };
+  }
+
+  // A página confere o link antes de abrir a passkey, para avisar logo se ele expirou. Não gasta o link.
+  checkWalletLink(token: string): boolean {
+    const link = this.db.get().walletLinks?.[token];
+    return !!link && link.expiresAt > Date.now();
+  }
+
+  // Chamado pela página de cadastro. Guarda só o endereço PÚBLICO: a chave fica no celular da pessoa.
+  registerWallet(token: string, address: string): { ok: true; userId: string } | Err {
+    const cur = this.db.get();
+    const link = cur.walletLinks?.[token];
+    if (!link || link.expiresAt <= Date.now()) return { ok: false, error: INVALID_LINK };
+    // Endereço inválido não gasta o link: a pessoa pode tentar de novo.
+    if (!isSolanaAddress(address)) return { ok: false, error: "Endereço de carteira inválido." };
+    const { [token]: _used, ...walletLinks } = cur.walletLinks ?? {};
+    this.db.set({ ...cur, walletLinks, addresses: { ...cur.addresses, [link.userId]: address } });
+    return { ok: true, userId: link.userId };
+  }
+
   // Pagamentos do mesmo chat rodam em fila: o depósito leva segundos na devnet, e duas chamadas juntas
   // leriam o mesmo rateio, uma apagaria o pagamento da outra e o cofre receberia em dobro.
   private queues = new Map<string, Promise<unknown>>();
+  // Rateios cujo cofre está sendo criado agora: a lista de participantes já está congelada.
+  private opening = new Set<string>();
 
   private inQueue<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
     const run = (this.queues.get(chatId) ?? Promise.resolve()).then(fn, fn);
@@ -155,15 +210,21 @@ export class RateioService {
     });
   }
 
-  simulatePix(
-    chatId: string, userId: string,
-  ): Promise<{ ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer } | Err> {
+  simulatePix(chatId: string, userId: string): Promise<PayResult> {
     return this.inQueue(chatId, () => this.pay(chatId, userId));
   }
 
-  private async pay(
-    chatId: string, userId: string,
-  ): Promise<{ ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer } | Err> {
+  // /liberar: tenta de novo uma liberação que ficou pendente (carteira cadastrada depois, ou erro de rede).
+  release(chatId: string): Promise<PayResult> {
+    return this.inQueue(chatId, async () => {
+      const r = activeRateio(this.db, chatId);
+      if (!r) return { ok: false, error: NO_RATEIO };
+      if (!allPaid(r)) return { ok: false, error: `Ainda falta gente pagar: ${progress(r)}` };
+      return this.finish(r);
+    });
+  }
+
+  private async pay(chatId: string, userId: string): Promise<PayResult> {
     let r = activeRateio(this.db, chatId);
     if (!r) return { ok: false, error: NO_RATEIO };
     // Rateio com todos pagos e a liberação pendente (release falhou) continua valendo, mesmo passado o prazo.
@@ -173,12 +234,38 @@ export class RateioService {
 
     // Só deposita quem ainda não pagou: repetir o comando não cobra duas vezes.
     if (!me.paid) {
+      // O cofre na rede nasce no primeiro pagamento, com a lista de participantes daquele momento.
+      if (this.escrow.open && !r.vaultAddress) {
+        // Com número de pessoas combinado (/rateio ... 4), um cofre aberto antes de todos entrarem congelaria
+        // a lista incompleta: a última vaga nunca seria preenchida e o dinheiro nunca seria liberado.
+        if (r.expectedParticipants !== undefined && !isFull(r)) {
+          const n = r.participants.length;
+          return { ok: false, error: `Espere todos entrarem antes de pagar: ${n} de ${r.expectedParticipants} entraram.` };
+        }
+        this.opening.add(r.id);
+        try {
+          const vaultAddress = await this.escrow.open(r);
+          r = { ...(activeRateio(this.db, chatId) ?? r), vaultAddress };
+          saveRateio(this.db, r);
+        } finally {
+          this.opening.delete(r.id);
+        }
+      }
       await this.escrow.deposit(r.id, sharesCents(r).get(userId)!);
       // Relê depois do depósito: alguém pode ter entrado (/participar) enquanto a devnet respondia.
       r = markPaid(activeRateio(this.db, chatId) ?? r, userId);
       saveRateio(this.db, r);
     }
     if (!allPaid(r)) return { ok: true, rateio: r, progress: progress(r) };
+    return this.finish(r);
+  }
+
+  // Todos pagaram: libera ao responsável. No modo cofre, só depois que ele cadastrar a carteira com passkey;
+  // até lá o dinheiro fica seguro no cofre e /liberar tenta de novo.
+  private async finish(r: Rateio): Promise<PayResult> {
+    if (this.escrow.open && !this.db.get().addresses?.[r.responsibleId]) {
+      return { ok: true, rateio: r, progress: progress(r), awaitingWallet: true };
+    }
 
     // Se release lançar, o rateio continua aberto com todos pagos e a próxima chamada tenta de novo.
     const sig = await this.escrow.release(r.id, r.responsibleId);

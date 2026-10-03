@@ -10,4 +10,7 @@ export const config = {
   mintAddress: process.env.MINT_ADDRESS ?? "",
   channel: process.env.CHANNEL ?? "telegram",
   waAuthDir: process.env.WA_AUTH_DIR ?? "./data/wa-auth",
+  // Página de cadastro da carteira com passkey (docs/proposta-passkey.md). Vazio = /carteira indisponível.
+  walletPageUrl: process.env.WALLET_PAGE_URL ?? "",
+  walletPagePort: Number(process.env.WALLET_PAGE_PORT ?? "8787"),
 };

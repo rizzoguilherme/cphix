@@ -9,6 +9,7 @@ export type Rateio = {
   // Opcionais: rateios antigos (sem estes campos) seguem como antes, sem limite de pessoas nem prazo.
   expectedParticipants?: number; // quantas pessoas dividem a conta; a cota é total / isto
   deadline?: number; // instante (ms desde 1970) em que o prazo de pagamento acaba
+  vaultAddress?: string; // endereço do cofre na rede, quando o Escrow cria um (open); qualquer um confere
 };
 
 const UNIT_MS = { m: 60_000, min: 60_000, h: 3_600_000, d: 86_400_000 } as const;
