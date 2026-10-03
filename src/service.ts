@@ -34,6 +34,12 @@ export class RateioService {
     return { ok: true, rateio };
   }
 
+  // Só leitura: quem já pagou e quem falta, para responder "quem pagou?" sem ninguém precisar cobrar.
+  status(chatId: string): { ok: true; rateio: Rateio } | Err {
+    const rateio = activeRateio(this.db, chatId);
+    return rateio ? { ok: true, rateio } : { ok: false, error: NO_RATEIO };
+  }
+
   // Pagamentos do mesmo chat rodam em fila: o depósito leva segundos na devnet, e duas chamadas juntas
   // leriam o mesmo rateio, uma apagaria o pagamento da outra e o cofre receberia em dobro.
   private queues = new Map<string, Promise<unknown>>();

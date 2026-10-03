@@ -1,4 +1,4 @@
-import { sharesCents } from "./rateio";
+import { progress, sharesCents } from "./rateio";
 import type { RateioService } from "./service";
 
 // O que um adaptador entrega: quem falou, onde, e o que escreveu.
@@ -52,6 +52,17 @@ export async function handleMessage(svc: RateioService, m: Incoming): Promise<Re
         console.error(e);
         return { text: "Erro ao falar com a Solana. Tente de novo em instantes." };
       }
+    }
+    case "status": {
+      const res = svc.status(m.chatId);
+      if (!res.ok) return { text: res.error };
+      const r = res.rateio;
+      const shares = sharesCents(r);
+      const responsible = r.participants.find((p) => p.userId === r.responsibleId)?.name ?? "Responsável";
+      const lines = r.participants.map((p) => `${p.paid ? "✅" : "⏳"} ${p.name}: ${brl(shares.get(p.userId)!)}`);
+      return {
+        text: [`🧾 ${r.description}: ${brl(r.totalCents)} (responsável: ${responsible})`, ...lines, progress(r)].join("\n"),
+      };
     }
     default:
       return null;

@@ -220,3 +220,16 @@ describe("concurrent calls in the same chat", () => {
     expect(res.ok && res.releaseUrl).toBe(explorerUrl("rel-1"));
   });
 });
+
+describe("status", () => {
+  it("fails without an open rateio", () => {
+    expect(setup().svc.status("g1")).toEqual({ ok: false, error: "Nenhum rateio aberto. Use /rateio." });
+  });
+
+  it("returns the open rateio with who already paid", async () => {
+    const { svc } = withThree();
+    await svc.simulatePix("g1", "u2");
+    const res = svc.status("g1");
+    expect(res.ok && res.rateio.participants.map((p) => p.paid)).toEqual([false, true, false]);
+  });
+});
