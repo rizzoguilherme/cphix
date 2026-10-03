@@ -10,6 +10,8 @@ type Err = { ok: false; error: string };
 
 const USAGE = "Uso: /rateio <valor> <descrição>. Exemplo: /rateio 120 churrasco";
 const NO_RATEIO = "Nenhum rateio aberto. Use /rateio.";
+const MAX_CENTS = 1_000_000; // R$ 10.000,00
+const MAX_DESCRIPTION = 60;
 
 export class RateioService {
   constructor(private db: JsonStore<DB>, private escrow: Escrow, private receipt?: ReceiptMaker) {}
@@ -20,6 +22,13 @@ export class RateioService {
     const totalCents = parseAmountToCents(amount);
     const description = rest.join(" ");
     if (totalCents === null || !description) return { ok: false, error: USAGE };
+    // Acima disso a tesouraria de teste pode não ter token, e o erro viraria "Erro ao falar com a Solana".
+    if (totalCents > MAX_CENTS) return { ok: false, error: "O valor máximo de um rateio é R$ 10.000,00." };
+    // A descrição aparece em /status, /cobrar, /historico e no comprovante: longa demais, quebra tudo.
+    // Array.from conta acento e emoji como um caractere.
+    if (Array.from(description).length > MAX_DESCRIPTION) {
+      return { ok: false, error: `A descrição pode ter no máximo ${MAX_DESCRIPTION} caracteres.` };
+    }
     if (activeRateio(this.db, chatId)) return { ok: false, error: "Já existe um rateio aberto neste chat." };
     const rateio = createRateio({ chatId, description, totalCents, responsibleId: userId, responsibleName: name });
     saveRateio(this.db, rateio);
