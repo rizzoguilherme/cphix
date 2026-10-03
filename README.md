@@ -1,6 +1,6 @@
 # CPhix
 
-**O Pix move o dinheiro. A Solana faz o dinheiro cumprir regras.**
+**O Pix mudou o Brasil. Nós viemos evoluir o Pix.**
 
 CPhix é um bot de Telegram e WhatsApp que divide a conta de um grupo e segura o dinheiro num cofre até todos pagarem.
 
