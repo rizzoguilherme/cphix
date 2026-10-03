@@ -1,5 +1,6 @@
 import { progress, sharesCents } from "./rateio";
 import type { RateioService } from "./service";
+import { explorerUrl } from "./solana";
 
 // O que um adaptador entrega: quem falou, onde, e o que escreveu.
 export type Incoming = { chatId: string; userId: string; name: string; isGroup: boolean; text: string };
@@ -22,6 +23,7 @@ const HELP = [
   "/participar: entra no rateio",
   "/simular_pix: paga a sua parte (Pix simulado)",
   "/status: mostra quem já pagou",
+  "/historico: rateios já liberados, com o link de cada transação",
   "",
   "Me adicione a um grupo e use os comandos lá.",
 ].join("\n");
@@ -79,6 +81,16 @@ export async function handleMessage(svc: RateioService, m: Incoming): Promise<Re
       return {
         text: [`🧾 ${r.description}: ${brl(r.totalCents)} (responsável: ${responsible})`, ...lines, progress(r)].join("\n"),
       };
+    }
+    case "historico": {
+      // Cada liberação traz o link do Explorer: qualquer pessoa do grupo confere a transação na rede.
+      const released = svc.history(m.chatId);
+      if (released.length === 0) return { text: "Nenhum rateio liberado neste grupo ainda." };
+      const items = released.map((r) => {
+        const responsible = r.participants.find((p) => p.userId === r.responsibleId)?.name ?? "Responsável";
+        return `🧾 ${r.description}: ${brl(r.totalCents)} para ${responsible}\n${explorerUrl(r.releaseSig!)}`;
+      });
+      return { text: ["📜 Rateios liberados neste grupo:", ...items].join("\n\n") };
     }
     default:
       return null;

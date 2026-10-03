@@ -132,3 +132,25 @@ describe("/start and /ajuda", () => {
     }
   });
 });
+
+describe("/historico", () => {
+  it("says when nothing was released yet", async () => {
+    expect((await handleMessage(setup(), msg("/historico")))?.text).toBe("Nenhum rateio liberado neste grupo ainda.");
+  });
+
+  it("lists released rateios with responsible, amount and Explorer link", async () => {
+    const svc = setup();
+    await handleMessage(svc, msg("/rateio 120 churrasco"));
+    await handleMessage(svc, msg("/participar", "u2", "Bia"));
+    await handleMessage(svc, msg("/simular_pix"));
+    await handleMessage(svc, msg("/simular_pix", "u2", "Bia"));
+    expect((await handleMessage(svc, msg("/historico", "u2", "Bia")))?.text).toBe(
+      "📜 Rateios liberados neste grupo:\n\n" +
+      `🧾 churrasco: R$ 120,00 para Ana\n${explorerUrl("rel-1")}`,
+    );
+  });
+
+  it("is listed in the help", async () => {
+    expect((await handleMessage(setup(), msg("/ajuda")))?.text).toContain("/historico");
+  });
+});
