@@ -36,7 +36,7 @@ describe("handleMessage", () => {
   it("ignores plain text and unknown commands", async () => {
     const svc = setup();
     expect(await handleMessage(svc, msg("oi pessoal"))).toBeNull();
-    expect(await handleMessage(svc, msg("/ajuda"))).toBeNull();
+    expect(await handleMessage(svc, msg("/xyz"))).toBeNull();
   });
 
   it("/rateio only works in groups", async () => {
@@ -117,5 +117,18 @@ describe("/status", () => {
       "⏳ Ana: R$ 33,34\n✅ Bia: R$ 33,33\n⏳ Caio: R$ 33,33\n" +
       "1 de 3 pagaram ✅",
     );
+  });
+});
+
+describe("/start and /ajuda", () => {
+  it.each(["/start", "/ajuda", "/help", "/start@CPhixBot"])("%s explains the commands in private and in groups", async (text) => {
+    for (const isGroup of [false, true]) {
+      const reply = await handleMessage(setup(), msg(text, "u1", "Ana", isGroup));
+      expect(reply?.text).toContain("/rateio 120 churrasco");
+      expect(reply?.text).toContain("/participar");
+      expect(reply?.text).toContain("/simular_pix");
+      expect(reply?.text).toContain("/status");
+      expect(reply?.text).toContain("grupo");
+    }
   });
 });
