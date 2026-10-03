@@ -1,6 +1,7 @@
 import { progress, sharesCents } from "./rateio";
 import type { RateioService } from "./service";
 import { explorerUrl } from "./solana";
+import { config } from "./config";
 
 // O que um adaptador entrega: quem falou, onde, e o que escreveu.
 export type Incoming = { chatId: string; userId: string; name: string; isGroup: boolean; text: string };
@@ -24,12 +25,41 @@ const HELP = [
   "/simular_pix: paga a sua parte (Pix simulado)",
   "/status: mostra quem já pagou",
   "/historico: rateios já liberados, com o link de cada transação",
+  "/liberar: libera o dinheiro ao responsável quando todos já pagaram",
+  "/carteira: cadastra a sua carteira para receber (no privado comigo)",
   "",
   "Me adicione a um grupo e use os comandos lá.",
 ].join("\n");
 
+// Endereço (não transação) no Explorer: o cofre do rateio, para qualquer um conferir o dinheiro retido.
+const addressUrl = (a: string) => `https://explorer.solana.com/address/${a}?cluster=devnet`;
+
+// Resposta de /simular_pix e /liberar: progresso, liberação com link, ou dinheiro esperando a carteira.
+const payReply = (res: Awaited<ReturnType<RateioService["simulatePix"]>>): Reply => {
+  if (!res.ok) return { text: res.error };
+  if (res.releaseUrl) {
+    return {
+      text: `${res.progress}\n🎉 Todos pagaram! Valor liberado ao responsável.\n${res.releaseUrl}`,
+      image: res.receiptPng,
+    };
+  }
+  if (res.awaitingWallet) {
+    const r = res.rateio;
+    const responsible = r.participants.find((p) => p.userId === r.responsibleId)?.name ?? "Responsável";
+    return {
+      text: `${res.progress}\n🎉 Todos pagaram! O dinheiro está seguro no cofre.\n` +
+        `${responsible}, para receber, envie /carteira no privado comigo e cadastre sua carteira. ` +
+        "Depois, alguém manda /liberar aqui.",
+    };
+  }
+  return { text: res.progress, image: res.receiptPng };
+};
+
 // Comandos que valem para qualquer canal. Texto que não é comando devolve null: o bot não responde conversa comum.
-export async function handleMessage(svc: RateioService, m: Incoming): Promise<Reply | null> {
+// `opts.walletPageUrl` existe para os testes; no bot vem do .env (WALLET_PAGE_URL).
+export async function handleMessage(
+  svc: RateioService, m: Incoming, opts: { walletPageUrl?: string } = {},
+): Promise<Reply | null> {
   const match = COMMAND.exec(m.text.trim());
   if (!match) return null;
   const args = match[2] ?? "";
@@ -51,21 +81,26 @@ export async function handleMessage(svc: RateioService, m: Incoming): Promise<Re
       const n = res.rateio.participants.length;
       return { text: `${m.name} entrou. Cota atual: ~${brl(share)} (${n} pessoas). Pague com /simular_pix` };
     }
-    case "simular_pix": {
+    case "simular_pix":
+    case "liberar": {
       try {
-        const res = await svc.simulatePix(m.chatId, m.userId);
-        if (!res.ok) return { text: res.error };
-        if (res.releaseUrl) {
-          return {
-            text: `${res.progress}\n🎉 Todos pagaram! Valor liberado ao responsável.\n${res.releaseUrl}`,
-            image: res.receiptPng,
-          };
-        }
-        return { text: res.progress, image: res.receiptPng };
+        const isPix = match[1].toLowerCase() === "simular_pix";
+        return payReply(isPix ? await svc.simulatePix(m.chatId, m.userId) : await svc.release(m.chatId));
       } catch (e) {
         console.error(e);
         return { text: "Erro ao falar com a Solana. Tente de novo em instantes." };
       }
+    }
+    case "carteira": {
+      // O link cadastra a carteira de quem pediu: no grupo, qualquer um poderia usá-lo.
+      if (m.isGroup) return { text: "Por segurança, envie /carteira no privado comigo." };
+      const page = opts.walletPageUrl ?? config.walletPageUrl;
+      if (!page) return { text: "O cadastro de carteira ainda não está disponível." };
+      const url = new URL(page);
+      url.searchParams.set("t", svc.createWalletLink(m.userId).token);
+      return {
+        text: `Cadastre sua carteira com a biometria do celular. O link é só seu e vale 15 minutos, não compartilhe:\n${url}`,
+      };
     }
     case "start":
     case "ajuda":
@@ -79,7 +114,12 @@ export async function handleMessage(svc: RateioService, m: Incoming): Promise<Re
       const responsible = r.participants.find((p) => p.userId === r.responsibleId)?.name ?? "Responsável";
       const lines = r.participants.map((p) => `${p.paid ? "✅" : "⏳"} ${p.name}: ${brl(shares.get(p.userId)!)}`);
       return {
-        text: [`🧾 ${r.description}: ${brl(r.totalCents)} (responsável: ${responsible})`, ...lines, progress(r)].join("\n"),
+        text: [
+          `🧾 ${r.description}: ${brl(r.totalCents)} (responsável: ${responsible})`,
+          ...(r.vaultAddress ? [`🔒 Cofre: ${addressUrl(r.vaultAddress)}`] : []),
+          ...lines,
+          progress(r),
+        ].join("\n"),
       };
     }
     case "historico": {
