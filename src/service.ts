@@ -34,7 +34,25 @@ export class RateioService {
     return { ok: true, rateio };
   }
 
-  async simulatePix(
+  // Pagamentos do mesmo chat rodam em fila: o depósito leva segundos na devnet, e duas chamadas juntas
+  // leriam o mesmo rateio, uma apagaria o pagamento da outra e o cofre receberia em dobro.
+  private queues = new Map<string, Promise<unknown>>();
+
+  private inQueue<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.queues.get(chatId) ?? Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => {}); // um erro não trava a fila do chat
+    this.queues.set(chatId, tail);
+    void tail.then(() => { if (this.queues.get(chatId) === tail) this.queues.delete(chatId); });
+    return run;
+  }
+
+  simulatePix(
+    chatId: string, userId: string,
+  ): Promise<{ ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer } | Err> {
+    return this.inQueue(chatId, () => this.pay(chatId, userId));
+  }
+
+  private async pay(
     chatId: string, userId: string,
   ): Promise<{ ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer } | Err> {
     let r = activeRateio(this.db, chatId);
@@ -45,7 +63,8 @@ export class RateioService {
     // Só deposita quem ainda não pagou: repetir o comando não cobra duas vezes.
     if (!me.paid) {
       await this.escrow.deposit(r.id, sharesCents(r).get(userId)!);
-      r = markPaid(r, userId);
+      // Relê depois do depósito: alguém pode ter entrado (/participar) enquanto a devnet respondia.
+      r = markPaid(activeRateio(this.db, chatId) ?? r, userId);
       saveRateio(this.db, r);
     }
     if (!allPaid(r)) return { ok: true, rateio: r, progress: progress(r) };

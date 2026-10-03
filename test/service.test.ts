@@ -18,8 +18,10 @@ class FakeEscrow implements Escrow {
   deposits: [string, number][] = [];
   releases: [string, string][] = [];
   failReleases = 0;
+  delayMs = 0; // simula a espera da devnet, para os testes de chamadas simultâneas
   async deposit(rateioId: string, cents: number) {
     this.deposits.push([rateioId, cents]);
+    if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     return `dep-${this.deposits.length}`;
   }
   async release(rateioId: string, toUserId: string) {
@@ -171,5 +173,50 @@ describe("receipt", () => {
     expect(res.ok && res.receiptPng).toBeUndefined();
     expect(err).toHaveBeenCalled();
     err.mockRestore();
+  });
+});
+
+describe("concurrent calls in the same chat", () => {
+  it("keeps both payments when two people pay at the same time", async () => {
+    const { svc, escrow, db } = withThree();
+    escrow.delayMs = 20;
+    await Promise.all([svc.simulatePix("g1", "u2"), svc.simulatePix("g1", "u3")]);
+    expect(escrow.deposits).toHaveLength(2);
+    expect(db.get().rateios[0].participants.filter((p) => p.paid).map((p) => p.userId)).toEqual(["u2", "u3"]);
+  });
+
+  it("deposits once when the same person double-taps", async () => {
+    const { svc, escrow } = withThree();
+    escrow.delayMs = 20;
+    await Promise.all([svc.simulatePix("g1", "u2"), svc.simulatePix("g1", "u2")]);
+    expect(escrow.deposits).toHaveLength(1);
+  });
+
+  it("releases once when the last two pay at the same time", async () => {
+    const { svc, escrow } = withThree();
+    await svc.simulatePix("g1", "u1");
+    escrow.delayMs = 20;
+    const results = await Promise.all([svc.simulatePix("g1", "u2"), svc.simulatePix("g1", "u3")]);
+    expect(escrow.releases).toHaveLength(1);
+    expect(results.filter((r) => r.ok && r.releaseUrl)).toHaveLength(1);
+  });
+
+  it("does not lose a participant who joins while a deposit is in flight", async () => {
+    const { svc, escrow, db } = withThree();
+    escrow.delayMs = 20;
+    const paying = svc.simulatePix("g1", "u1");
+    svc.join("g1", "u4", "Davi");
+    await paying;
+    expect(db.get().rateios[0].participants.map((p) => p.userId)).toEqual(["u1", "u2", "u3", "u4"]);
+  });
+
+  it("keeps serving the chat after a call fails", async () => {
+    const { svc, escrow } = withThree();
+    escrow.failReleases = 1;
+    await svc.simulatePix("g1", "u1");
+    await svc.simulatePix("g1", "u2");
+    await expect(svc.simulatePix("g1", "u3")).rejects.toThrow("rede fora");
+    const res = await svc.simulatePix("g1", "u3");
+    expect(res.ok && res.releaseUrl).toBe(explorerUrl("rel-1"));
   });
 });
