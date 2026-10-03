@@ -6,8 +6,56 @@ export type Rateio = {
   id: string; chatId: string; description: string; totalCents: number;
   responsibleId: string; participants: Participant[];
   status: "open" | "released"; releaseSig?: string; // releaseSig = assinatura da tx de liberação
+  // Opcionais: rateios antigos (sem estes campos) seguem como antes, sem limite de pessoas nem prazo.
+  expectedParticipants?: number; // quantas pessoas dividem a conta; a cota é total / isto
+  deadline?: number; // instante (ms desde 1970) em que o prazo de pagamento acaba
   vaultAddress?: string; // endereço do cofre na rede, quando o Escrow cria um (open); qualquer um confere
 };
+
+const UNIT_MS = { m: 60_000, min: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+
+// "30m", "2h", "1d" -> milissegundos. Sem a unidade não é prazo: "30" sozinho pode ser a quantidade de pessoas.
+export const parseDuration = (text: string): number | null => {
+  const m = /^(\d+)(m|min|h|d)$/i.exec(text.trim());
+  if (!m) return null;
+  const ms = Number(m[1]) * UNIT_MS[m[2].toLowerCase() as keyof typeof UNIT_MS];
+  return ms > 0 ? ms : null;
+};
+
+// "<valor> <descrição> [pessoas] [prazo]". Lê do fim: o prazo (se houver, com unidade), depois as pessoas
+// (um número no fim, desde que sobre uma descrição), e o que sobra é a descrição, que pode conter números
+// ("pizza 2 queijos"). Sem pessoas (`expected` null), a conta é dividida entre quem entrar.
+export const parseRateioArgs = (args: string): {
+  totalCents: number; description: string; expected: number | null; durationMs: number | null;
+} | null => {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  const totalCents = parseAmountToCents(tokens.shift() ?? "");
+  if (totalCents === null) return null;
+  let durationMs: number | null = null;
+  if (tokens.length > 0) {
+    durationMs = parseDuration(tokens[tokens.length - 1]);
+    if (durationMs !== null) tokens.pop();
+  }
+  let expected: number | null = null;
+  if (tokens.length > 1 && /^\d+$/.test(tokens[tokens.length - 1])) expected = Number(tokens.pop());
+  const description = tokens.join(" ");
+  if (!description) return null;
+  return { totalCents, description, expected, durationMs };
+};
+
+const BR = "America/Sao_Paulo";
+const dayKey = (ms: number) => new Date(ms).toLocaleDateString("pt-BR", { timeZone: BR });
+
+// "20:35" no fuso do Brasil (o que o grupo enxerga). Se não for no mesmo dia de `now`, inclui a data:
+// "04/10 20:35", senão um prazo de 1 dia pareceria estar acabando.
+export const formatTime = (ms: number, now: number = ms): string => {
+  const time = new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: BR });
+  if (dayKey(ms) === dayKey(now)) return time;
+  const date = new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: BR });
+  return `${date} ${time}`;
+};
+
+export const isExpired = (r: Rateio, now: number): boolean => r.deadline !== undefined && now >= r.deadline;
 
 // Aceita "120", "120,50", "120.5" e o formato brasileiro "1.000,50". No máximo 2 casas, para não haver
 // fração de centavo. O ponto de milhar só vale junto com a vírgula: "12.345" sozinho é ambíguo e é recusado.
@@ -23,6 +71,7 @@ export const parseAmountToCents = (text: string): number | null => {
 // Quem cria é o responsável e também paga a sua parte, por isso entra como primeiro participante.
 export const createRateio = (a: {
   chatId: string; description: string; totalCents: number; responsibleId: string; responsibleName: string;
+  expectedParticipants?: number; deadline?: number;
 }): Rateio => ({
   id: randomUUID().slice(0, 8),
   chatId: a.chatId,
@@ -31,7 +80,15 @@ export const createRateio = (a: {
   responsibleId: a.responsibleId,
   participants: [{ userId: a.responsibleId, name: a.responsibleName, paid: false }],
   status: "open",
+  ...(a.expectedParticipants !== undefined && { expectedParticipants: a.expectedParticipants }),
+  ...(a.deadline !== undefined && { deadline: a.deadline }),
 });
+
+// Quantas pessoas dividem a conta: o combinado na criação, ou (rateio antigo) quem já entrou.
+export const splitCount = (r: Rateio): number => r.expectedParticipants ?? r.participants.length;
+
+export const isFull = (r: Rateio): boolean =>
+  r.expectedParticipants !== undefined && r.participants.length >= r.expectedParticipants;
 
 export const join = (r: Rateio, userId: string, name: string): Rateio =>
   r.participants.some((p) => p.userId === userId)
@@ -40,7 +97,7 @@ export const join = (r: Rateio, userId: string, name: string): Rateio =>
 
 // Divisão igual que fecha no total: os centavos que sobram vão, um a um, para os primeiros.
 export const sharesCents = (r: Rateio): Map<string, number> => {
-  const n = r.participants.length;
+  const n = splitCount(r);
   const base = Math.floor(r.totalCents / n);
   const extra = r.totalCents - base * n;
   return new Map(r.participants.map((p, i) => [p.userId, base + (i < extra ? 1 : 0)]));
@@ -51,7 +108,9 @@ export const markPaid = (r: Rateio, userId: string): Rateio => {
   return { ...r, participants: r.participants.map((p) => (p.userId === userId ? { ...p, paid: true } : p)) };
 };
 
-export const allPaid = (r: Rateio): boolean => r.participants.every((p) => p.paid);
+// Com número combinado, só fecha quando todas as vagas foram preenchidas e pagas.
+export const allPaid = (r: Rateio): boolean =>
+  r.participants.length >= splitCount(r) && r.participants.every((p) => p.paid);
 
 export const progress = (r: Rateio): string =>
-  `${r.participants.filter((p) => p.paid).length} de ${r.participants.length} pagaram ✅`;
+  `${r.participants.filter((p) => p.paid).length} de ${splitCount(r)} pagaram ✅`;

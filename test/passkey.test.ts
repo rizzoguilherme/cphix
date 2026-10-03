@@ -133,6 +133,50 @@ describe("vault mode: opening the vault", () => {
   });
 });
 
+describe("vault mode with a set number of people (/rateio ... 4)", () => {
+  const setupFour = () => {
+    const dir = mkdtempSync(join(tmpdir(), "cphix-vault4-"));
+    dirs.push(dir);
+    const db = new JsonStore<DB>(join(dir, "db.json"), { rateios: [], wallets: {} });
+    const escrow = new FakeVaultEscrow();
+    const svc = new RateioService(db, escrow);
+    svc.create("g1", "u1", "Ana", "120 churrasco 4");
+    svc.join("g1", "u2", "Bia");
+    svc.join("g1", "u3", "Caio");
+    return { db, escrow, svc };
+  };
+
+  it("does not take payments before everyone joined, so the vault never freezes incomplete", async () => {
+    const { svc, escrow } = setupFour();
+    expect(await svc.simulatePix("g1", "u2")).toEqual({
+      ok: false, error: "Espere todos entrarem antes de pagar: 3 de 4 entraram.",
+    });
+    expect(escrow.opened).toHaveLength(0);
+    expect(escrow.deposits).toHaveLength(0);
+  });
+
+  it("opens the vault with all four once the rateio is full, and can be released", async () => {
+    const { svc, escrow } = setupFour();
+    svc.join("g1", "u4", "Davi");
+    register(svc, "u1");
+    for (const u of ["u1", "u2", "u3", "u4"]) await svc.simulatePix("g1", u);
+    expect(escrow.opened[0].participants).toHaveLength(4);
+    expect(escrow.deposits.map(([, c]) => c)).toEqual([3000, 3000, 3000, 3000]);
+    expect(escrow.releases).toHaveLength(1);
+  });
+
+  it("keeps today's behavior without open: pays before the rateio is full", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cphix-plain4-"));
+    dirs.push(dir);
+    const db = new JsonStore<DB>(join(dir, "db.json"), { rateios: [], wallets: {} });
+    const escrow = new FakeEscrow();
+    const svc = new RateioService(db, escrow);
+    svc.create("g1", "u1", "Ana", "120 churrasco 4");
+    expect((await svc.simulatePix("g1", "u1")).ok).toBe(true);
+    expect(escrow.deposits).toHaveLength(1);
+  });
+});
+
 describe("vault mode: release waits for the responsible's wallet", () => {
   it("keeps the money in the vault when the responsible has no wallet", async () => {
     const { svc, escrow, db } = setupVault();
