@@ -10,4 +10,9 @@ export const config = {
   mintAddress: process.env.MINT_ADDRESS ?? "",
   channel: process.env.CHANNEL ?? "telegram",
   waAuthDir: process.env.WA_AUTH_DIR ?? "./data/wa-auth",
+  waCloudToken: process.env.WA_CLOUD_TOKEN ?? "",
+  waCloudPhoneId: process.env.WA_CLOUD_PHONE_ID ?? "",
+  waCloudVerifyToken: process.env.WA_CLOUD_VERIFY_TOKEN ?? "",
+  waCloudAppSecret: process.env.WA_CLOUD_APP_SECRET ?? "",
+  waCloudPort: Number(process.env.WA_CLOUD_PORT ?? "3000"),
 };
