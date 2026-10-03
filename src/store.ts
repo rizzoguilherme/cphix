@@ -2,6 +2,23 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import type { Rateio } from "./rateio";
 
+// No Windows, o antivírus ou o indexador às vezes seguram o arquivo por um instante e a gravação falha com
+// EPERM, EBUSY ou EACCES. Falhar ali é o pior caso: o depósito na Solana já aconteceu e não ficaria
+// registrado, e a pessoa pagaria de novo. Então tenta de novo por um momento antes de desistir.
+const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
+const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+export const retrySync = <R>(fn: () => R, { attempts = 10, delayMs = 50 } = {}): R => {
+  for (let i = 1; ; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      if (i >= attempts || !BUSY.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
+      if (delayMs) sleepSync(delayMs);
+    }
+  }
+};
+
 // Persistência simples em um arquivo JSON: basta para a demo e sobrevive a reinício.
 // Em produção seria um banco de dados.
 export class JsonStore<T> {
@@ -20,8 +37,10 @@ export class JsonStore<T> {
     const json = JSON.stringify(v, null, 2);
     const tmp = `${this.path}.tmp`;
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(tmp, json);
-    renameSync(tmp, this.path);
+    retrySync(() => {
+      writeFileSync(tmp, json);
+      renameSync(tmp, this.path);
+    });
     this.value = v;
   }
 }
