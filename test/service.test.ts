@@ -9,7 +9,8 @@ import type { Escrow } from "../src/escrow";
 import type { ReceiptMaker } from "../src/receipt";
 import { explorerUrl } from "../src/solana";
 
-const USAGE = "Uso: /rateio <valor> <descrição>. Exemplo: /rateio 120 churrasco";
+const USAGE =
+  "Uso: /rateio <valor> <descrição> <pessoas> [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
 
 const dirs: string[] = [];
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
@@ -44,7 +45,7 @@ const setup = (receipt?: ReceiptMaker) => {
 // Rateio de R$ 120 com Ana (responsável), Bia e Caio.
 const withThree = (receipt?: ReceiptMaker) => {
   const s = setup(receipt);
-  s.svc.create("g1", "u1", "Ana", "120 churrasco");
+  s.svc.create("g1", "u1", "Ana", "120 churrasco 3");
   s.svc.join("g1", "u2", "Bia");
   s.svc.join("g1", "u3", "Caio");
   return s;
@@ -60,11 +61,11 @@ describe("create", () => {
 
   it("makes the creator responsible and rejects a second open rateio in the chat", () => {
     const { svc } = setup();
-    const res = svc.create("g1", "u1", "Ana", "120 churrasco de domingo");
+    const res = svc.create("g1", "u1", "Ana", "120 churrasco de domingo 3");
     expect(res.ok && res.rateio.responsibleId).toBe("u1");
     expect(res.ok && res.rateio.description).toBe("churrasco de domingo");
     expect(res.ok && res.rateio.totalCents).toBe(12000);
-    expect(svc.create("g1", "u2", "Bia", "50 pizza")).toEqual({
+    expect(svc.create("g1", "u2", "Bia", "50 pizza 2")).toEqual({
       ok: false, error: "Já existe um rateio aberto neste chat.",
     });
   });
@@ -77,7 +78,7 @@ describe("join", () => {
 
   it("does not duplicate a participant", () => {
     const { svc } = setup();
-    svc.create("g1", "u1", "Ana", "120 churrasco");
+    svc.create("g1", "u1", "Ana", "120 churrasco 2");
     svc.join("g1", "u2", "Bia");
     const res = svc.join("g1", "u2", "Bia");
     expect(res.ok && res.rateio.participants).toHaveLength(2);
@@ -88,7 +89,7 @@ describe("simulatePix", () => {
   it("fails without an open rateio or for someone who did not join", async () => {
     const { svc } = setup();
     expect(await svc.simulatePix("g1", "u1")).toEqual({ ok: false, error: "Nenhum rateio aberto. Use /rateio." });
-    svc.create("g1", "u1", "Ana", "120 churrasco");
+    svc.create("g1", "u1", "Ana", "120 churrasco 2");
     expect(await svc.simulatePix("g1", "x")).toEqual({
       ok: false, error: "Você não entrou neste rateio. Toque em Participar.",
     });
@@ -203,7 +204,10 @@ describe("concurrent calls in the same chat", () => {
   });
 
   it("does not lose a participant who joins while a deposit is in flight", async () => {
-    const { svc, escrow, db } = withThree();
+    const { svc, escrow, db } = setup();
+    svc.create("g1", "u1", "Ana", "120 churrasco 4");
+    svc.join("g1", "u2", "Bia");
+    svc.join("g1", "u3", "Caio");
     escrow.delayMs = 20;
     const paying = svc.simulatePix("g1", "u1");
     svc.join("g1", "u4", "Davi");
