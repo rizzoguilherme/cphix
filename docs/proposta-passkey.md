@@ -41,8 +41,14 @@ O `wallets` **não** muda de significado agora, para não quebrar o `getOrCreate
 2. A página de cadastro (tarefa 4 do Dev 1, depende do SDK que você escolher) cria a passkey e chama `service.registerWallet(token, endereço)`.
 3. Quando todos pagam, se o responsável ainda não tem carteira cadastrada, **o dinheiro fica no cofre** e o bot pede o cadastro. Depois do cadastro, qualquer um manda `/liberar` no grupo.
 
-## O que preciso de você
+## Respostas do Dev 2 (2026-10-03): contrato aceito
 
-- [ ] De acordo com `open(rateio): Promise<string>` devolvendo o endereço do cofre?
-- [ ] A `AnchorEscrow` lê o destino da liberação de `db.addresses`?
-- [ ] Qual SDK de carteira com passkey você vai usar? A página de cadastro depende disso.
+- [x] **`open(rateio): Promise<string>`** devolvendo o endereço do cofre: aceito. Fica opcional no `service.ts`; quando a `AnchorEscrow` estiver pronta, o Dev 2 move o `open` para a interface em `escrow.ts`.
+- [x] **Destino da liberação:** `release(rateioId, toUserId)` da `AnchorEscrow` busca `db.addresses[toUserId]`. `vaultAddress`, `addresses` e `walletLinks` ficam como propostos; `wallets` fica como está até a migração.
+- [x] **SDK de passkey:** LazorKit, pacote `@lazorkit/wallet` 3.4.0 (React). Pela [documentação de redes](https://docs.lazorkit.com/networks), o protocolo v2 está ativo na devnet e só ele cria carteiras novas; na mainnet o v2 ainda não foi publicado.
+
+## Cuidados com o LazorKit (conferidos nos tipos do `@lazorkit/wallet` 3.4.0)
+
+1. **O endereço a cadastrar é o `wallet.vaultPda`, nunca o `wallet.smartWallet`.** O tipo `WalletInfo` diz: `smartWallet` é a "Wallet PDA (internal authority account — use vaultPda for user-facing address)" e `vaultPda` é o "Vault PDA — the actual SOL-holding account users should fund". Dinheiro mandado ao `smartWallet` fica preso.
+2. **O `vaultPda` é opcional no tipo:** carteiras do protocolo v1 não o têm. A página de cadastro recusa uma carteira sem `vaultPda`, em vez de cair no `smartWallet`.
+3. **Para a `AnchorEscrow` (Dev 2):** o `vaultPda` é um PDA, fora da curva ed25519. A conta de token do responsável tem que ser calculada com `getAssociatedTokenAddressSync(mint, vaultPda, true)` (o terceiro argumento, `allowOwnerOffCurve`). Sem ele, a biblioteca recusa o endereço na hora da liberação.
