@@ -47,6 +47,34 @@ O `wallets` **não** muda de significado agora, para não quebrar o `getOrCreate
 - [x] **Destino da liberação:** `release(rateioId, toUserId)` da `AnchorEscrow` busca `db.addresses[toUserId]`. `vaultAddress`, `addresses` e `walletLinks` ficam como propostos; `wallets` fica como está até a migração.
 - [x] **SDK de passkey:** LazorKit, pacote `@lazorkit/wallet` 3.4.0 (React). Pela [documentação de redes](https://docs.lazorkit.com/networks), o protocolo v2 está ativo na devnet e só ele cria carteiras novas; na mainnet o v2 ainda não foi publicado.
 
+## Página de cadastro (tarefa 4, feita)
+
+`src/walletPage.ts`, servidor `http` do Node, sem dependência nova:
+
+| Rota | O que faz |
+| --- | --- |
+| `GET /carteira?t=<token>` | A página. Carrega React e `@lazorkit/wallet` 3.4.0 da CDN esm.sh, tira o token da barra de endereço, confere o link e mostra o botão "Cadastrar com biometria" |
+| `GET /api/carteira/link?t=<token>` | `{ valid }`: o link ainda vale? Não gasta o link |
+| `POST /api/carteira` `{ token, address }` | Chama `registerWallet`. 200 `{ ok: true }` ou 400 com a mensagem do service; corpo limitado a 2 KB |
+
+- A página manda `wallet.vaultPda` e recusa carteira sem ele (v1). Não guarda chave no navegador (`keyStorage: "memory"`).
+- Cabeçalhos: `Referrer-Policy: no-referrer` (o token está na URL e não pode vazar para a CDN), `Cache-Control: no-store`, `X-Frame-Options: DENY`.
+- Dois ajustes necessários para o SDK rodar sem build, achados testando no navegador: `globalThis.JS_SHA256_NO_NODE_JS = true` (o `js-sha256` achava que estava no Node) e passar `paymasterConfig` explícito ao `LazorkitProvider` (sem ele, o provider entra em laço: erro React #185).
+- Testado no navegador em `localhost`: carrega sem erro, o link inválido é recusado e o botão abre o portal do LazorKit. **A criação da carteira com biometria ainda não foi testada de ponta a ponta.**
+
+**Para testar sozinho:** `npx tsx scripts/wallet-page-dev.ts` sobe só a página, com banco separado e um link de teste.
+
+**Para ligar no bot (Dev 3, `src/index.ts`):**
+
+```ts
+import { startWalletPage } from "./walletPage";
+if (config.walletPageUrl) startWalletPage(svc, config.walletPagePort);
+```
+
+**O que falta para o celular abrir o link:** o SDK exige HTTPS (ou `localhost`). O link do `/carteira` vai para o celular, então `WALLET_PAGE_URL` precisa ser um endereço HTTPS público que chegue na porta `WALLET_PAGE_PORT`: um túnel (Cloudflare Tunnel, ngrok) para a demo, ou um servidor de verdade em produção.
+
+**Melhoria futura:** hoje quem tem o link cadastra qualquer endereço. Uma prova de posse (`signMessage` na página e `verifyWalletMessage` no servidor) garantiria que o endereço é da carteira de quem fez a biometria.
+
 ## Cuidados com o LazorKit (conferidos nos tipos do `@lazorkit/wallet` 3.4.0)
 
 1. **O endereço a cadastrar é o `wallet.vaultPda`, nunca o `wallet.smartWallet`.** O tipo `WalletInfo` diz: `smartWallet` é a "Wallet PDA (internal authority account — use vaultPda for user-facing address)" e `vaultPda` é o "Vault PDA — the actual SOL-holding account users should fund". Dinheiro mandado ao `smartWallet` fica preso.

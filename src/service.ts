@@ -85,6 +85,12 @@ export class RateioService {
     return { token };
   }
 
+  // A página confere o link antes de abrir a passkey, para avisar logo se ele expirou. Não gasta o link.
+  checkWalletLink(token: string): boolean {
+    const link = this.db.get().walletLinks?.[token];
+    return !!link && link.expiresAt > Date.now();
+  }
+
   // Chamado pela página de cadastro. Guarda só o endereço PÚBLICO: a chave fica no celular da pessoa.
   registerWallet(token: string, address: string): { ok: true; userId: string } | Err {
     const cur = this.db.get();
