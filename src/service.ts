@@ -1,21 +1,67 @@
-import type { Rateio } from "./rateio";
-import type { DB, JsonStore } from "./store";
+// Orquestra o fluxo: regras (rateio.ts), memória (store.ts), cofre (Escrow) e comprovante (ReceiptMaker).
+// Não conhece Telegram, WhatsApp nem Solana: só as interfaces, para ser testável com versões falsas.
+import { allPaid, createRateio, join, markPaid, parseAmountToCents, progress, sharesCents, type Rateio } from "./rateio";
+import { activeRateio, saveRateio, type DB, type JsonStore } from "./store";
 import type { Escrow } from "./escrow";
 import type { ReceiptMaker } from "./receipt";
+import { explorerUrl } from "./solana";
 
 type Err = { ok: false; error: string };
 
+const USAGE = "Uso: /rateio <valor> <descrição>. Exemplo: /rateio 120 churrasco";
+const NO_RATEIO = "Nenhum rateio aberto. Use /rateio.";
+
 export class RateioService {
-  constructor(_db: JsonStore<DB>, _escrow: Escrow, _receipt?: ReceiptMaker) {}
-  create(_chatId: string, _userId: string, _name: string, _args: string): { ok: true; rateio: Rateio } | Err {
-    throw new Error("não implementado");
+  constructor(private db: JsonStore<DB>, private escrow: Escrow, private receipt?: ReceiptMaker) {}
+
+  // args = texto depois do comando: o primeiro token é o valor, o resto é a descrição.
+  create(chatId: string, userId: string, name: string, args: string): { ok: true; rateio: Rateio } | Err {
+    const [amount = "", ...rest] = args.trim().split(/\s+/);
+    const totalCents = parseAmountToCents(amount);
+    const description = rest.join(" ");
+    if (totalCents === null || !description) return { ok: false, error: USAGE };
+    if (activeRateio(this.db, chatId)) return { ok: false, error: "Já existe um rateio aberto neste chat." };
+    const rateio = createRateio({ chatId, description, totalCents, responsibleId: userId, responsibleName: name });
+    saveRateio(this.db, rateio);
+    return { ok: true, rateio };
   }
-  join(_chatId: string, _userId: string, _name: string): { ok: true; rateio: Rateio } | Err {
-    throw new Error("não implementado");
+
+  join(chatId: string, userId: string, name: string): { ok: true; rateio: Rateio } | Err {
+    const cur = activeRateio(this.db, chatId);
+    if (!cur) return { ok: false, error: NO_RATEIO };
+    const rateio = join(cur, userId, name);
+    saveRateio(this.db, rateio);
+    return { ok: true, rateio };
   }
+
   async simulatePix(
-    _chatId: string, _userId: string,
+    chatId: string, userId: string,
   ): Promise<{ ok: true; rateio: Rateio; progress: string; releaseUrl?: string; receiptPng?: Buffer } | Err> {
-    throw new Error("não implementado");
+    let r = activeRateio(this.db, chatId);
+    if (!r) return { ok: false, error: NO_RATEIO };
+    const me = r.participants.find((p) => p.userId === userId);
+    if (!me) return { ok: false, error: "Você não entrou neste rateio. Toque em Participar." };
+
+    // Só deposita quem ainda não pagou: repetir o comando não cobra duas vezes.
+    if (!me.paid) {
+      await this.escrow.deposit(r.id, sharesCents(r).get(userId)!);
+      r = markPaid(r, userId);
+      saveRateio(this.db, r);
+    }
+    if (!allPaid(r)) return { ok: true, rateio: r, progress: progress(r) };
+
+    // Se release lançar, o rateio continua aberto com todos pagos e a próxima chamada tenta de novo.
+    const sig = await this.escrow.release(r.id, r.responsibleId);
+    const released: Rateio = { ...r, status: "released", releaseSig: sig };
+    saveRateio(this.db, released);
+
+    // O comprovante é um extra: a liberação já aconteceu e nunca falha por causa dele.
+    let receiptPng: Buffer | undefined;
+    try {
+      receiptPng = (await this.receipt?.(released, sig)) ?? undefined;
+    } catch (e) {
+      console.error(e);
+    }
+    return { ok: true, rateio: released, progress: progress(released), releaseUrl: explorerUrl(sig), receiptPng };
   }
 }

@@ -1,3 +1,5 @@
+// Em vez de decodificar instruções, comparamos os SALDOS DE TOKEN antes e depois da transação:
+// quem perdeu saldo pagou, quem ganhou recebeu. Vale igual para depósito e liberação.
 type TokenBal = { mint: string; owner?: string; uiTokenAmount: { amount: string } };
 
 export type ParsedTxLike = {
@@ -21,9 +23,48 @@ export interface TxSource {
   ): Promise<ParsedTxLike | null>;
 }
 
-const todo = (): never => { throw new Error("não implementado"); };
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export const parseTxDetails = (_tx: ParsedTxLike, _signature: string, _mint: string): TxDetails | null => todo();
-export const fetchTxDetails = (
-  _conn: TxSource, _signature: string, _mint: string, _opts?: { attempts?: number; delayMs?: number },
-): Promise<TxDetails | null> => todo();
+export const parseTxDetails = (tx: ParsedTxLike, signature: string, mint: string): TxDetails | null => {
+  const meta = tx.meta;
+  if (!meta || meta.err) return null;
+
+  // Variação por dono: soma contas do mesmo dono; conta ausente em "pre" conta como zero.
+  const delta = new Map<string, bigint>();
+  const apply = (list: TokenBal[] | null | undefined, sign: 1n | -1n) => {
+    for (const b of list ?? []) {
+      if (b.mint !== mint || !b.owner) continue;
+      delta.set(b.owner, (delta.get(b.owner) ?? 0n) + sign * BigInt(b.uiTokenAmount.amount));
+    }
+  };
+  apply(meta.postTokenBalances, 1n);
+  apply(meta.preTokenBalances, -1n);
+
+  let toOwner: string | undefined;
+  let fromOwner: string | undefined;
+  let max = 0n;
+  let min = 0n;
+  for (const [owner, d] of delta) {
+    if (d > max) { max = d; toOwner = owner; }
+    if (d < min) { min = d; fromOwner = owner; }
+  }
+  if (!toOwner || !fromOwner) return null;
+
+  return {
+    signature, slot: tx.slot, blockTime: tx.blockTime ?? null, feeLamports: meta.fee,
+    mint, tokenUnits: max, fromOwner, toOwner,
+  };
+};
+
+export const fetchTxDetails = async (
+  conn: TxSource, signature: string, mint: string, opts: { attempts?: number; delayMs?: number } = {},
+): Promise<TxDetails | null> => {
+  const { attempts = 5, delayMs = 1000 } = opts;
+  for (let i = 0; i < attempts; i++) {
+    // Logo após confirmar, a RPC às vezes ainda não devolve a transação: tenta de novo.
+    const tx = await conn.getParsedTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    if (tx) return parseTxDetails(tx, signature, mint);
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return null;
+};
