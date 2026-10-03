@@ -6,6 +6,7 @@ export type Rateio = {
   id: string; chatId: string; description: string; totalCents: number;
   responsibleId: string; participants: Participant[];
   status: "open" | "released"; releaseSig?: string; // releaseSig = assinatura da tx de liberação
+  vaultAddress?: string; // endereço do cofre na rede, quando o Escrow cria um (open); qualquer um confere
 };
 
 // Aceita "120", "120,50", "120.5" e o formato brasileiro "1.000,50". No máximo 2 casas, para não haver

@@ -27,7 +27,14 @@ export class JsonStore<T> {
 }
 
 // O "banco": rateios e carteiras (id do usuário -> chave secreta em base58).
-export type DB = { rateios: Rateio[]; wallets: Record<string, string> };
+// addresses e walletLinks são da carteira com passkey (docs/proposta-passkey.md): só endereços PÚBLICOS e
+// links de cadastro de uso único. Opcionais para não quebrar quem cria o banco sem eles.
+export type DB = {
+  rateios: Rateio[];
+  wallets: Record<string, string>;
+  addresses?: Record<string, string>;
+  walletLinks?: Record<string, { userId: string; expiresAt: number }>;
+};
 
 // Arquivos antigos guardavam ids do Telegram como número; hoje todo id é string (vale para o WhatsApp também).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -41,6 +48,8 @@ export const normalizeDb = (raw: any): DB => ({
     participants: (r.participants ?? []).map((p: any) => ({ ...p, userId: String(p.userId) })),
   })),
   wallets: raw.wallets ?? {},
+  ...(raw.addresses && { addresses: raw.addresses }),
+  ...(raw.walletLinks && { walletLinks: raw.walletLinks }),
 });
 
 // No máximo um rateio aberto por chat; os já liberados ficam só como histórico.
