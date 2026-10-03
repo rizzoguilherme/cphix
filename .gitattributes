@@ -1,0 +1,3 @@
+# Fim de linha LF no repositório e na cópia local, em qualquer sistema.
+# Evita commits que reescrevem arquivos inteiros só por causa de CRLF (Windows) e conflitos falsos nos PRs.
+* text=auto eol=lf
