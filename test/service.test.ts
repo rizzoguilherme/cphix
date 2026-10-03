@@ -10,7 +10,7 @@ import type { ReceiptMaker } from "../src/receipt";
 import { explorerUrl } from "../src/solana";
 
 const USAGE =
-  "Uso: /rateio <valor> <descrição> <pessoas> [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
+  "Uso: /rateio <valor> <descrição> [pessoas] [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
 
 const dirs: string[] = [];
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });

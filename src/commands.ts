@@ -1,4 +1,4 @@
-import { formatTime, progress, sharesCents, splitCount } from "./rateio";
+import { progress, sharesCents, splitCount } from "./rateio";
 import { EXPIRED_MSG, type RateioService } from "./service";
 import { explorerUrl } from "./solana";
 
@@ -22,7 +22,7 @@ const COMMAND = /^\/([a-zA-Z_]+)(?:@(\w+))?(?:\s+([\s\S]*))?$/;
 const HELP = [
   "Olá! Eu divido a conta do grupo e seguro o dinheiro até todos pagarem.",
   "",
-  "/rateio <valor> <descrição> <pessoas> [prazo]: cria a conta. Exemplo: /rateio 120 churrasco 4 30m",
+  "/rateio <valor> <descrição> [pessoas] [prazo]: cria a conta. Exemplo: /rateio 120 churrasco 4 30m",
   "/participar: entra no rateio",
   "/simular_pix: paga a sua parte (Pix simulado)",
   "/status: mostra quem já pagou",
@@ -53,11 +53,13 @@ export async function handleMessage(
       if (!res.ok) return { text: res.error };
       const r = res.rateio;
       const share = sharesCents(r).get(m.userId)!;
+      const until = `Pague até ${svc.formatDeadline(r.deadline!)}.`;
       return {
         text: [
           `🧾 ${r.description}: ${brl(r.totalCents)}`,
           `Responsável: ${m.name}`,
-          `${splitCount(r)} pessoas, ~${brl(share)} cada. Pague até ${formatTime(r.deadline!)}.`,
+          // Sem número combinado, a conta é dividida entre quem entrar.
+          r.expectedParticipants === undefined ? until : `${splitCount(r)} pessoas, ~${brl(share)} cada. ${until}`,
           "Para entrar, envie /participar.",
         ].join("\n"),
         offerJoin: true,
@@ -66,13 +68,16 @@ export async function handleMessage(
     case "prorrogar": {
       const res = await svc.extend(m.chatId, m.userId, args);
       if (!res.ok) return { text: res.error };
-      return { text: `Prazo prorrogado: pague até ${formatTime(res.rateio.deadline!)}.` };
+      return { text: `Prazo prorrogado: pague até ${svc.formatDeadline(res.rateio.deadline!)}.` };
     }
     case "participar": {
       const res = svc.join(m.chatId, m.userId, m.name);
       if (!res.ok) return { text: res.error };
       const share = sharesCents(res.rateio).get(m.userId)!;
       const n = res.rateio.participants.length;
+      if (res.rateio.expectedParticipants === undefined) {
+        return { text: `${m.name} entrou. Cota atual: ~${brl(share)} (${n} pessoas). Pague com /simular_pix` };
+      }
       return { text: `${m.name} entrou (${n} de ${splitCount(res.rateio)}). Sua cota: ~${brl(share)}. Pague com /simular_pix` };
     }
     case "simular_pix": {
@@ -105,7 +110,7 @@ export async function handleMessage(
       const vagas = splitCount(r) - r.participants.length;
       const footer = r.deadline === undefined ? [] : [
         ...(vagas > 0 ? [`${vagasText(vagas)} (/participar).`] : []),
-        svc.isExpired(r) ? `⏰ ${EXPIRED_MSG}` : `Prazo: até ${formatTime(r.deadline)}.`,
+        svc.isExpired(r) ? `⏰ ${EXPIRED_MSG}` : `Prazo: até ${svc.formatDeadline(r.deadline)}.`,
       ];
       return {
         text: [

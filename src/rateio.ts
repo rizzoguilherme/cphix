@@ -21,10 +21,11 @@ export const parseDuration = (text: string): number | null => {
   return ms > 0 ? ms : null;
 };
 
-// "<valor> <descrição> <pessoas> [prazo]". Lê do fim: o prazo (se houver, com unidade), depois as pessoas,
-// e o que sobra é a descrição, que pode conter números ("pizza 2 queijos").
+// "<valor> <descrição> [pessoas] [prazo]". Lê do fim: o prazo (se houver, com unidade), depois as pessoas
+// (um número no fim, desde que sobre uma descrição), e o que sobra é a descrição, que pode conter números
+// ("pizza 2 queijos"). Sem pessoas (`expected` null), a conta é dividida entre quem entrar.
 export const parseRateioArgs = (args: string): {
-  totalCents: number; description: string; expected: number; durationMs: number | null;
+  totalCents: number; description: string; expected: number | null; durationMs: number | null;
 } | null => {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
   const totalCents = parseAmountToCents(tokens.shift() ?? "");
@@ -34,16 +35,24 @@ export const parseRateioArgs = (args: string): {
     durationMs = parseDuration(tokens[tokens.length - 1]);
     if (durationMs !== null) tokens.pop();
   }
-  const last = tokens.pop() ?? "";
-  if (!/^\d+$/.test(last)) return null;
+  let expected: number | null = null;
+  if (tokens.length > 1 && /^\d+$/.test(tokens[tokens.length - 1])) expected = Number(tokens.pop());
   const description = tokens.join(" ");
   if (!description) return null;
-  return { totalCents, description, expected: Number(last), durationMs };
+  return { totalCents, description, expected, durationMs };
 };
 
-// "20:35" no fuso do Brasil: é o horário que as pessoas do grupo enxergam.
-export const formatTime = (ms: number): string =>
-  new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+const BR = "America/Sao_Paulo";
+const dayKey = (ms: number) => new Date(ms).toLocaleDateString("pt-BR", { timeZone: BR });
+
+// "20:35" no fuso do Brasil (o que o grupo enxerga). Se não for no mesmo dia de `now`, inclui a data:
+// "04/10 20:35", senão um prazo de 1 dia pareceria estar acabando.
+export const formatTime = (ms: number, now: number = ms): string => {
+  const time = new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: BR });
+  if (dayKey(ms) === dayKey(now)) return time;
+  const date = new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: BR });
+  return `${date} ${time}`;
+};
 
 export const isExpired = (r: Rateio, now: number): boolean => r.deadline !== undefined && now >= r.deadline;
 

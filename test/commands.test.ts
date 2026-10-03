@@ -10,7 +10,7 @@ import type { ReceiptMaker } from "../src/receipt";
 import { explorerUrl } from "../src/solana";
 
 const USAGE =
-  "Uso: /rateio <valor> <descrição> <pessoas> [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
+  "Uso: /rateio <valor> <descrição> [pessoas] [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
 
 const dirs: string[] = [];
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
@@ -131,7 +131,7 @@ describe("/start and /ajuda", () => {
   it.each(["/start", "/ajuda", "/help", "/start@CPhixBot"])("%s explains the commands in private and in groups", async (text) => {
     for (const isGroup of [false, true]) {
       const reply = await handleMessage(setup(), msg(text, "u1", "Ana", isGroup));
-      expect(reply?.text).toContain("/rateio <valor> <descrição> <pessoas> [prazo]");
+      expect(reply?.text).toContain("/rateio <valor> <descrição> [pessoas] [prazo]");
       expect(reply?.text).toContain("/participar");
       expect(reply?.text).toContain("/simular_pix");
       expect(reply?.text).toContain("/status");

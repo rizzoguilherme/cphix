@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleMessage, type Incoming } from "../src/commands";
-import { parseDuration, parseRateioArgs } from "../src/rateio";
+import { formatTime, parseDuration, parseRateioArgs } from "../src/rateio";
 import { EXPIRED_MSG, RateioService } from "../src/service";
 import { JsonStore, type DB } from "../src/store";
 import type { Escrow } from "../src/escrow";
@@ -55,8 +55,85 @@ describe("parseRateioArgs", () => {
   it("descrição com várias palavras e números", () => {
     expect(parseRateioArgs("50 pizza 2 queijos 3 1h")).toEqual({ totalCents: 5000, description: "pizza 2 queijos", expected: 3, durationMs: 60 * MIN });
   });
-  it("recusa sem pessoas, sem descrição ou sem valor", () => {
-    for (const a of ["120 churrasco", "120", "120 4", "120 4 30m", "churrasco 4", ""]) expect(parseRateioArgs(a)).toBeNull();
+  it("pessoas é opcional: sem número, a divisão é entre quem entrar", () => {
+    expect(parseRateioArgs("120 churrasco")).toEqual({ totalCents: 12000, description: "churrasco", expected: null, durationMs: null });
+    expect(parseRateioArgs("120 churrasco de domingo 2h")).toEqual({ totalCents: 12000, description: "churrasco de domingo", expected: null, durationMs: 120 * MIN });
+  });
+  it("um número sozinho depois do valor é a descrição, não as pessoas", () => {
+    expect(parseRateioArgs("120 4")).toEqual({ totalCents: 12000, description: "4", expected: null, durationMs: null });
+  });
+  it("recusa sem descrição ou sem valor", () => {
+    for (const a of ["120", "120 30m", "churrasco 4", ""]) expect(parseRateioArgs(a)).toBeNull();
+  });
+});
+
+describe("formatTime", () => {
+  const base = Date.UTC(2026, 9, 3, 18, 39); // 03/10 15:39 em Brasília
+  it("hoje: só a hora", () => expect(formatTime(base + 30 * MIN, base)).toBe("16:09"));
+  it("outro dia: com a data", () => {
+    expect(formatTime(base + 1440 * MIN, base)).toBe("04/10 15:39");
+    expect(formatTime(base + 7 * 1440 * MIN, base)).toBe("10/10 15:39");
+  });
+  it("vira o dia no fuso do Brasil, não no UTC", () => {
+    expect(formatTime(base + 9 * 60 * MIN, base)).toBe("04/10 00:39");
+  });
+});
+
+describe("sem número de pessoas (como antes)", () => {
+  it("cria sem expectedParticipants e a cota segue quem entrar", async () => {
+    const { svc } = setup();
+    const res = svc.create("g1", "u1", "Ana", "120 churrasco");
+    expect(res.ok && res.rateio.expectedParticipants).toBeUndefined();
+    expect(res.ok && res.rateio.deadline).toBeDefined();
+    expect(await say(svc, "/participar", "u2", "Bia")).toBe("Bia entrou. Cota atual: ~R$ 60,00 (2 pessoas). Pague com /simular_pix");
+    expect(await say(svc, "/participar", "u3", "Caio")).toBe("Caio entrou. Cota atual: ~R$ 40,00 (3 pessoas). Pague com /simular_pix");
+  });
+  it("a resposta do /rateio não menciona número de pessoas", async () => {
+    const { svc } = setup();
+    expect(await say(svc, "/rateio 120 churrasco")).toMatch(/^🧾 churrasco: R\$ 120,00\nResponsável: Ana\nPague até \d\d:\d\d\.\nPara entrar, envie \/participar\.$/);
+  });
+  it("libera quando todos que entraram pagaram", async () => {
+    const { svc, releases } = setup();
+    svc.create("g1", "u1", "Ana", "120 churrasco");
+    svc.join("g1", "u2", "Bia");
+    await svc.simulatePix("g1", "u1");
+    await svc.simulatePix("g1", "u2");
+    expect(releases).toEqual(["u1"]);
+  });
+});
+
+describe("rateio vencido não trava o grupo", () => {
+  it("sem pagamentos: um novo /rateio substitui o vencido", () => {
+    const { svc, db, clock } = setup();
+    svc.create("g1", "u1", "Ana", "100 pizza 2 30m");
+    clock.t += 31 * MIN;
+    const res = svc.create("g1", "u2", "Bia", "50 cafe 2");
+    expect(res.ok && res.rateio.responsibleId).toBe("u2");
+    expect(db.get().rateios.map((r) => r.description)).toEqual(["cafe"]);
+  });
+  it("antes do prazo continua recusando um segundo rateio", () => {
+    const { svc, clock } = setup();
+    svc.create("g1", "u1", "Ana", "100 pizza 2 30m");
+    clock.t += 29 * MIN;
+    expect(svc.create("g1", "u2", "Bia", "50 cafe 2")).toEqual({ ok: false, error: "Já existe um rateio aberto neste chat." });
+  });
+  it("vencido com pagamento continua preso ao responsável (há dinheiro a devolver)", async () => {
+    const { svc, db, clock } = setup();
+    svc.create("g1", "u1", "Ana", "100 pizza 2 30m");
+    svc.join("g1", "u2", "Bia");
+    await svc.simulatePix("g1", "u2");
+    clock.t += 31 * MIN;
+    expect(svc.create("g1", "u3", "Caio", "50 cafe 2")).toEqual({ ok: false, error: "Já existe um rateio aberto neste chat." });
+    expect(db.get().rateios).toHaveLength(1);
+  });
+});
+
+describe("prazo em outro dia", () => {
+  it("mostra a data quando o prazo não é hoje", async () => {
+    const { svc } = setup();
+    expect(await say(svc, "/rateio 100 viagem 4 1d")).toMatch(/Pague até \d\d\/\d\d \d\d:\d\d\./);
+    expect(await say(svc, "/status")).toMatch(/Prazo: até \d\d\/\d\d \d\d:\d\d\./);
+    expect(await say(svc, "/prorrogar 1h")).toMatch(/^Prazo prorrogado: pague até \d\d\/\d\d \d\d:\d\d\.$/);
   });
 });
 

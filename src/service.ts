@@ -1,7 +1,7 @@
 // Orquestra o fluxo: regras (rateio.ts), memória (store.ts), cofre (Escrow) e comprovante (ReceiptMaker).
 // Não conhece Telegram, WhatsApp nem Solana: só as interfaces, para ser testável com versões falsas.
 import {
-  allPaid, createRateio, isExpired, isFull, join, markPaid, parseDuration, parseRateioArgs, progress, sharesCents,
+  allPaid, createRateio, formatTime, isExpired, isFull, join, markPaid, parseDuration, parseRateioArgs, progress, sharesCents,
   type Rateio,
 } from "./rateio";
 import { activeRateio, saveRateio, type DB, type JsonStore } from "./store";
@@ -12,7 +12,7 @@ import { explorerUrl } from "./solana";
 type Err = { ok: false; error: string };
 
 const USAGE =
-  "Uso: /rateio <valor> <descrição> <pessoas> [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
+  "Uso: /rateio <valor> <descrição> [pessoas] [prazo]. Exemplo: /rateio 120 churrasco 4 30m (prazo: 30m, 2h, 1d; padrão 60m)";
 const NO_RATEIO = "Nenhum rateio aberto. Use /rateio.";
 const DEFAULT_DURATION_MS = 3_600_000; // 60 min
 const MIN_DURATION_MS = 60_000;
@@ -38,7 +38,7 @@ export class RateioService {
     if (!parsed) return { ok: false, error: USAGE };
     const { totalCents, description, expected } = parsed;
     const durationMs = parsed.durationMs ?? DEFAULT_DURATION_MS;
-    if (expected < MIN_PEOPLE || expected > MAX_PEOPLE) {
+    if (expected !== null && (expected < MIN_PEOPLE || expected > MAX_PEOPLE)) {
       return { ok: false, error: `A quantidade de pessoas deve ficar entre ${MIN_PEOPLE} e ${MAX_PEOPLE}.` };
     }
     if (durationMs < MIN_DURATION_MS || durationMs > MAX_DURATION_MS) return { ok: false, error: DURATION_RANGE };
@@ -49,10 +49,19 @@ export class RateioService {
     if (Array.from(description).length > MAX_DESCRIPTION) {
       return { ok: false, error: `A descrição pode ter no máximo ${MAX_DESCRIPTION} caracteres.` };
     }
-    if (activeRateio(this.db, chatId)) return { ok: false, error: "Já existe um rateio aberto neste chat." };
+    const open = activeRateio(this.db, chatId);
+    if (open) {
+      // Vencido e sem nenhum pagamento: não há dinheiro a devolver, então não deixa o grupo preso
+      // esperando o responsável. O rateio vencido é descartado e o novo toma o lugar.
+      if (!(isExpired(open, this.now()) && !open.participants.some((p) => p.paid))) {
+        return { ok: false, error: "Já existe um rateio aberto neste chat." };
+      }
+      const cur = this.db.get();
+      this.db.set({ ...cur, rateios: cur.rateios.filter((x) => x.id !== open.id) });
+    }
     const rateio = createRateio({
       chatId, description, totalCents, responsibleId: userId, responsibleName: name,
-      expectedParticipants: expected, deadline: this.now() + durationMs,
+      ...(expected !== null && { expectedParticipants: expected }), deadline: this.now() + durationMs,
     });
     saveRateio(this.db, rateio);
     return { ok: true, rateio };
@@ -71,6 +80,11 @@ export class RateioService {
 
   isExpired(r: Rateio): boolean {
     return isExpired(r, this.now());
+  }
+
+  // Hora do prazo para mostrar no chat; com a data se não for hoje.
+  formatDeadline(ms: number): string {
+    return formatTime(ms, this.now());
   }
 
   // Só leitura: quem já pagou e quem falta, para responder "quem pagou?" sem ninguém precisar cobrar.
