@@ -40,6 +40,15 @@ export class RateioService {
     return rateio ? { ok: true, rateio } : { ok: false, error: NO_RATEIO };
   }
 
+  // Rateios já liberados no chat, do mais recente ao mais antigo (saveRateio grava no fim, então a ordem
+  // da lista é a ordem da liberação). Limite de 5 para a mensagem caber na tela do celular.
+  history(chatId: string): Rateio[] {
+    return this.db.get().rateios
+      .filter((r) => r.chatId === chatId && r.status === "released" && r.releaseSig)
+      .slice(-5)
+      .reverse();
+  }
+
   // Pagamentos do mesmo chat rodam em fila: o depósito leva segundos na devnet, e duas chamadas juntas
   // leriam o mesmo rateio, uma apagaria o pagamento da outra e o cofre receberia em dobro.
   private queues = new Map<string, Promise<unknown>>();

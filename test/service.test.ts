@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RateioService } from "../src/service";
-import { JsonStore, type DB } from "../src/store";
+import { JsonStore, saveRateio, type DB } from "../src/store";
+import type { Rateio } from "../src/rateio";
 import type { Escrow } from "../src/escrow";
 import type { ReceiptMaker } from "../src/receipt";
 import { explorerUrl } from "../src/solana";
@@ -231,5 +232,40 @@ describe("status", () => {
     await svc.simulatePix("g1", "u2");
     const res = svc.status("g1");
     expect(res.ok && res.rateio.participants.map((p) => p.paid)).toEqual([false, true, false]);
+  });
+});
+
+describe("history", () => {
+  // Rateio já liberado, gravado direto no banco para não depender do fluxo inteiro.
+  const released = (id: string, chatId: string): Rateio => ({
+    id, chatId, description: id, totalCents: 100, responsibleId: "u1", status: "released", releaseSig: `sig-${id}`,
+    participants: [{ userId: "u1", name: "Ana", paid: true }],
+  });
+
+  it("is empty when nothing was released in the chat", () => {
+    const { svc } = withThree();
+    expect(svc.history("g1")).toEqual([]);
+  });
+
+  it("returns only released rateios of the chat, newest first", () => {
+    const { svc, db } = withThree();
+    saveRateio(db, released("r1", "g1"));
+    saveRateio(db, released("outro", "g2"));
+    saveRateio(db, released("r2", "g1"));
+    expect(svc.history("g1").map((r) => r.id)).toEqual(["r2", "r1"]);
+  });
+
+  it("returns at most the 5 most recent", () => {
+    const { svc, db } = setup();
+    for (let i = 1; i <= 7; i++) saveRateio(db, released(`r${i}`, "g1"));
+    expect(svc.history("g1").map((r) => r.id)).toEqual(["r7", "r6", "r5", "r4", "r3"]);
+  });
+
+  it("includes a rateio released through the normal flow", async () => {
+    const { svc } = withThree();
+    for (const u of ["u1", "u2", "u3"]) await svc.simulatePix("g1", u);
+    const [r] = svc.history("g1");
+    expect(r.description).toBe("churrasco");
+    expect(r.releaseSig).toBe("rel-1");
   });
 });
