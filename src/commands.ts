@@ -13,7 +13,7 @@ export type Reply = { text: string; offerJoin?: boolean; image?: Buffer };
 export const brl = (cents: number) => `R$ ${(cents / 100).toFixed(2).replace(".", ",")}`;
 
 // O sufixo @nomedobot existe porque grupos do Telegram escrevem "/rateio@MeuBot 50 pizza".
-const COMMAND = /^\/([a-zA-Z_]+)(?:@\w+)?(?:\s+([\s\S]*))?$/;
+const COMMAND = /^\/([a-zA-Z_]+)(?:@(\w+))?(?:\s+([\s\S]*))?$/;
 
 // O Telegram manda /start sozinho quando alguém abre o bot: sem resposta, parece que o bot está quebrado.
 const HELP = [
@@ -24,15 +24,23 @@ const HELP = [
   "/simular_pix: paga a sua parte (Pix simulado)",
   "/status: mostra quem já pagou",
   "/historico: rateios já liberados, com o link de cada transação",
+  "/cobrar: lista quem ainda falta pagar",
+  "/cancelar: o responsável cancela o rateio, se ninguém pagou ainda",
   "",
   "Me adicione a um grupo e use os comandos lá.",
 ].join("\n");
 
 // Comandos que valem para qualquer canal. Texto que não é comando devolve null: o bot não responde conversa comum.
-export async function handleMessage(svc: RateioService, m: Incoming): Promise<Reply | null> {
+// `opts.botUsername`: o adaptador do Telegram passa o nome do bot, para ignorar "/rateio@OutroBot" num grupo
+// com vários bots. Sem ele (WhatsApp, ou adaptador antigo), qualquer sufixo é aceito, como antes.
+export async function handleMessage(
+  svc: RateioService, m: Incoming, opts: { botUsername?: string } = {},
+): Promise<Reply | null> {
   const match = COMMAND.exec(m.text.trim());
   if (!match) return null;
-  const args = match[2] ?? "";
+  const target = match[2];
+  if (target && opts.botUsername && target.toLowerCase() !== opts.botUsername.toLowerCase()) return null;
+  const args = match[3] ?? "";
 
   switch (match[1].toLowerCase()) {
     case "rateio": {
@@ -81,6 +89,22 @@ export async function handleMessage(svc: RateioService, m: Incoming): Promise<Re
       return {
         text: [`🧾 ${r.description}: ${brl(r.totalCents)} (responsável: ${responsible})`, ...lines, progress(r)].join("\n"),
       };
+    }
+    case "cobrar": {
+      const res = svc.status(m.chatId);
+      if (!res.ok) return { text: res.error };
+      const shares = sharesCents(res.rateio);
+      const pending = res.rateio.participants
+        .filter((p) => !p.paid)
+        .map((p) => `${p.name} (${brl(shares.get(p.userId)!)})`);
+      if (pending.length === 0) return { text: "Todos já pagaram." };
+      // "Ana, Bia e Caio": vírgulas entre os nomes e "e" antes do último.
+      const names = pending.length === 1 ? pending[0] : `${pending.slice(0, -1).join(", ")} e ${pending.at(-1)}`;
+      return { text: `Faltam pagar: ${names}. Pague com /simular_pix` };
+    }
+    case "cancelar": {
+      const res = await svc.cancel(m.chatId, m.userId);
+      return { text: res.ok ? "Rateio cancelado." : res.error };
     }
     case "historico": {
       // Cada liberação traz o link do Explorer: qualquer pessoa do grupo confere a transação na rede.
