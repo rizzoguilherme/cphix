@@ -8,9 +8,12 @@ export type Rateio = {
   status: "open" | "released"; releaseSig?: string; // releaseSig = assinatura da tx de liberação
 };
 
-// Aceita "120", "120,50" ou "120.5". No máximo 2 casas, para não haver fração de centavo.
+// Aceita "120", "120,50", "120.5" e o formato brasileiro "1.000,50". No máximo 2 casas, para não haver
+// fração de centavo. O ponto de milhar só vale junto com a vírgula: "12.345" sozinho é ambíguo e é recusado.
 export const parseAmountToCents = (text: string): number | null => {
-  const t = text.trim().replace(",", ".");
+  let t = text.trim();
+  if (/^\d{1,3}(\.\d{3})+,\d{1,2}$/.test(t)) t = t.replace(/\./g, "");
+  t = t.replace(",", ".");
   if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
   const cents = Math.round(parseFloat(t) * 100);
   return cents > 0 ? cents : null;

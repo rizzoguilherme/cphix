@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonStore, normalizeDb, activeRateio, saveRateio, type DB } from "../src/store";
@@ -79,5 +79,26 @@ describe("activeRateio and saveRateio", () => {
     saveRateio(db, { ...rateio("r1", "c1"), description: "novo" });
     expect(db.get().rateios.map((r) => r.id)).toEqual(["r2", "r1"]);
     expect(db.get().rateios[1].description).toBe("novo");
+  });
+});
+
+describe("JsonStore safe write", () => {
+  it("overwrites an existing file and leaves no temp file behind", () => {
+    const dir = tmp();
+    const path = join(dir, "db.json");
+    const s = new JsonStore(path, { n: 0 });
+    s.set({ n: 1 });
+    s.set({ n: 2 });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ n: 2 });
+    expect(readdirSync(dir)).toEqual(["db.json"]);
+  });
+
+  it("keeps memory and disk unchanged when the value cannot be saved", () => {
+    const path = join(tmp(), "db.json");
+    const s = new JsonStore<{ n: unknown }>(path, { n: 0 });
+    s.set({ n: 1 });
+    expect(() => s.set({ n: 10n })).toThrow(); // BigInt não vira JSON
+    expect(s.get()).toEqual({ n: 1 });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ n: 1 });
   });
 });

@@ -36,7 +36,7 @@ describe("handleMessage", () => {
   it("ignores plain text and unknown commands", async () => {
     const svc = setup();
     expect(await handleMessage(svc, msg("oi pessoal"))).toBeNull();
-    expect(await handleMessage(svc, msg("/ajuda"))).toBeNull();
+    expect(await handleMessage(svc, msg("/xyz"))).toBeNull();
   });
 
   it("/rateio only works in groups", async () => {
@@ -99,4 +99,36 @@ describe("handleMessage", () => {
 describe("brl", () => {
   it.each([[0, "R$ 0,00"], [5, "R$ 0,05"], [4000, "R$ 40,00"], [12345, "R$ 123,45"]])("%i -> %s", (c, s) =>
     expect(brl(c)).toBe(s));
+});
+
+describe("/status", () => {
+  it("returns the no-rateio error when nothing is open", async () => {
+    expect((await handleMessage(setup(), msg("/status")))?.text).toBe("Nenhum rateio aberto. Use /rateio.");
+  });
+
+  it("lists each participant with share and payment state", async () => {
+    const svc = setup();
+    await handleMessage(svc, msg("/rateio 100 pizza"));
+    await handleMessage(svc, msg("/participar", "u2", "Bia"));
+    await handleMessage(svc, msg("/participar", "u3", "Caio"));
+    await handleMessage(svc, msg("/simular_pix", "u2", "Bia"));
+    expect((await handleMessage(svc, msg("/status", "u3", "Caio")))?.text).toBe(
+      "🧾 pizza: R$ 100,00 (responsável: Ana)\n" +
+      "⏳ Ana: R$ 33,34\n✅ Bia: R$ 33,33\n⏳ Caio: R$ 33,33\n" +
+      "1 de 3 pagaram ✅",
+    );
+  });
+});
+
+describe("/start and /ajuda", () => {
+  it.each(["/start", "/ajuda", "/help", "/start@CPhixBot"])("%s explains the commands in private and in groups", async (text) => {
+    for (const isGroup of [false, true]) {
+      const reply = await handleMessage(setup(), msg(text, "u1", "Ana", isGroup));
+      expect(reply?.text).toContain("/rateio 120 churrasco");
+      expect(reply?.text).toContain("/participar");
+      expect(reply?.text).toContain("/simular_pix");
+      expect(reply?.text).toContain("/status");
+      expect(reply?.text).toContain("grupo");
+    }
+  });
 });

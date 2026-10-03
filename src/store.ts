@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Rateio } from "./rateio";
 
@@ -14,10 +14,15 @@ export class JsonStore<T> {
   get(): T { return this.value; }
 
   // Gravação síncrona: dois comandos seguidos nunca leem um arquivo pela metade.
+  // Grava num temporário e renomeia: se o bot cair no meio, o db.json (com as chaves das carteiras)
+  // continua inteiro na versão anterior. A memória só muda depois que o disco mudou.
   set(v: T): void {
-    this.value = v;
+    const json = JSON.stringify(v, null, 2);
+    const tmp = `${this.path}.tmp`;
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(v, null, 2));
+    writeFileSync(tmp, json);
+    renameSync(tmp, this.path);
+    this.value = v;
   }
 }
 
